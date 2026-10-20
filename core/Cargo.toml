@@ -1,0 +1,42 @@
+[package]
+name = "tableport-core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+# All database work for the app. Swift calls it through bindings that UniFFI
+# generates (make core); the app links the static library.
+[lib]
+name = "tableport_core"
+# staticlib: linked into the app. cdylib: only read by uniffi-bindgen for
+# the bindings. lib: for the integration tests.
+crate-type = ["staticlib", "cdylib", "lib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+uniffi = { version = "0.32", features = ["cli"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "sync", "fs"] }
+tokio-postgres = "0.7"
+postgres-native-tls = "0.5"
+native-tls = "0.2"
+futures-util = "0.3"
+sqlformat = "0.5"  # Beautify in the query editor
+# Format JSON in the cell editor: keeps key order and exact numbers.
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
+# Local store: query history and saved queries. Bundled, so no system SQLite version matters.
+rusqlite = { version = "0.37", features = ["bundled"] }
+# SSH tunnel. ring instead of the default aws-lc-rs, which needs a C toolchain build.
+russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }  # reading the simple-query stream message by message
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[dev-dependencies]
+futures = "0.3"  # catch_unwind, so a failed test still drops its schema

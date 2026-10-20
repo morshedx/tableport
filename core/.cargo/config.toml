@@ -1,0 +1,4 @@
+# Match min_macos in mackit.toml. C code in dependencies (ring) otherwise
+# builds for the running macOS, and the app would fail on older ones.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "14.0"

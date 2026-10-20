@@ -1,0 +1,43 @@
+# How mac-kit (../mac-kit) builds, signs and releases TablePort.
+# `name` is the only place the UI reads the product name from. The bundle ID,
+# signer and feed path must not change after the first public release:
+# installed copies depend on them. (Before TablePort the app was the codename
+# "bangladb"; Migration.swift moves its data across once.)
+
+[app]
+name = "TablePort"
+executable = "tableport"
+bundle_id = "com.morshedx.tableport"
+# Built from Icon/*.svg by `make icon`.
+icon = "Sources/tableport/Resources/AppIcon.icns"
+version = "0.0.1"
+build = 1
+min_macos = "14.0"
+menu_bar = false
+
+[sign]
+# The signing identity comes from $MACKIT_SIGN, set in the untracked local.mk
+# (see the Makefile), so it stays out of this public file. Releases use an
+# Apple Development certificate: it carries a Team ID, so the Keychain ties
+# saved passwords to the team instead of to each build's hash. Without one,
+# builds are signed ad-hoc and `mackit release` refuses to run.
+
+[info]
+# Sparkle: generate_keys --account tableport. The private key is in the
+# login keychain; back it up. Never change this after 0.1.0.
+SUPublicEDKey = "QWzeH1iC9kd5N3KnOcjmmYmVIAjEFqQ6k5Y9dT6FqVo="
+SUEnableAutomaticChecks = true
+
+[release]
+# The free edition's releases: GitHub releases of the public repository,
+# while the code may live elsewhere. Installed copies read
+# https://github.com/morshedx/tableport/releases/latest/download/appcast.xml;
+# never change github_repo, feed_key or the Sparkle key after 0.1.0.
+slug = "tableport"
+host = "github"
+github_repo = "morshedx/tableport"
+page = "https://github.com/morshedx/tableport"
+feed_key = "appcast.xml"
+sparkle_account = "tableport"
+dmg_key = "{name}-{version}.dmg"
+zip = false

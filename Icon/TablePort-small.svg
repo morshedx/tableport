@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>TablePort (16–32 px)</title>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#12224A"/>
+  <circle cx="512" cy="512" r="290" fill="#E0B25A"/>
+  <circle cx="512" cy="512" r="196" fill="#F4EFE4"/>
+  <rect x="362" y="430" width="300" height="70" rx="22" fill="#12224A"/>
+  <rect x="362" y="530" width="300" height="60" rx="20" fill="#9AA3BA"/>
+</svg>
