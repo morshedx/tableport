@@ -99,7 +99,7 @@ extension SettingsView {
             summary: "A fast, native PostgreSQL client. Free and open source.",
             links: [
                 AboutLink("Website", url: "https://github.com/morshedx/tableport"),
-                AboutLink("Report an Issue", url: "https://github.com/morshedx/tableport/issues"),
+                AboutLink("Report a Problem", url: "https://github.com/morshedx/tableport/issues/new?template=bug_report.yml"),
                 AboutLink("What's New") { page = .updates },
             ],
             footer: "Apache-2.0. JetBrains Mono: SIL Open Font License 1.1. Icons: Lucide, ISC License. The PostgreSQL logo is a trademark of the PostgreSQL Community Association.",

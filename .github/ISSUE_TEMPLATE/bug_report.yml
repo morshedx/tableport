@@ -1,0 +1,60 @@
+name: Report a problem
+description: Something in TablePort doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying the beta. Please don't paste passwords, connection URLs with passwords, or private data.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead. Screenshots help.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a connection to …
+        2. Open the table …
+        3. …
+  - type: input
+    id: version
+    attributes:
+      label: TablePort version
+      description: Settings › About, for example 0.1.0-beta.1 (3).
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: macOS 15.1
+    validations:
+      required: true
+  - type: input
+    id: postgres
+    attributes:
+      label: PostgreSQL version and host
+      placeholder: 16.4 on AWS RDS, 17 on Supabase, 15 local with Homebrew …
+  - type: dropdown
+    id: connection
+    attributes:
+      label: How do you connect?
+      multiple: true
+      options:
+        - Local, no TLS
+        - TLS (require)
+        - TLS (verify-full)
+        - SSH tunnel with a key
+        - SSH tunnel with a password
+        - Read-only connection
+  - type: textarea
+    id: details
+    attributes:
+      label: Error messages or crash report
+      description: The exact error text, or the crash report from Console › Crash Reports.
+      render: text

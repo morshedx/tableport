@@ -3,7 +3,7 @@
 A fast, native PostgreSQL client for macOS. Free and open source.
 
 > **Public beta.** TablePort is new. Try it on development data first, and
-> please [report problems](https://github.com/morshedx/tableport/issues).
+> please [report problems](https://github.com/morshedx/tableport/issues/new?template=bug_report.yml).
 
 ## Features
 

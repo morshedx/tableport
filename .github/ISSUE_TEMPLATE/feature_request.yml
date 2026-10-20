@@ -1,0 +1,16 @@
+name: Suggest a feature
+description: An idea that would make TablePort better for you.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The task or the problem, in your own words.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+      description: How you imagine it working. A screenshot from another tool is welcome.
