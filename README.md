@@ -5,6 +5,8 @@ A fast, native PostgreSQL client for macOS. Free and open source.
 > **Public beta.** TablePort is new. Try it on development data first, and
 > please [report problems](https://github.com/morshedx/tableport/issues/new?template=bug_report.yml).
 
+![TablePort showing an orders table with the sidebar](docs/screenshots/table.png)
+
 ## Features
 
 - **Connections**: paste a `postgres://` URL, TLS (disable, prefer, require,
@@ -20,6 +22,16 @@ A fast, native PostgreSQL client for macOS. Free and open source.
 - **Copy and export**: copy rows as CSV or `INSERT` statements; export a
   table to CSV, JSON or SQL.
 - **Fast**: switching between large tables takes about 60–100 ms.
+
+## Screenshots
+
+| Query editor | Cell editor for JSON |
+|---|---|
+| ![Query editor running a saved query, with results below](docs/screenshots/query.png) | ![Cell editor with formatted JSON](docs/screenshots/cell-editor.png) |
+
+![Connections window with local, staging, production and development connections](docs/screenshots/connections.png)
+
+All screenshots use a made-up demo database.
 
 ## Install
 
