@@ -25,6 +25,14 @@ and pgAdmin, built with Swift and AppKit on a Rust core.
   table to CSV, JSON or SQL.
 - **Fast**: switching between large tables takes about 60–100 ms.
 
+## A TablePlus alternative for PostgreSQL
+
+TablePort is for people who want a native Mac PostgreSQL GUI without a
+subscription or a heavy Java or Electron app. If you use **TablePlus**,
+**Postico**, **pgAdmin**, **DBeaver** or **DataGrip** for PostgreSQL on a Mac,
+TablePort covers the daily work (browse, filter, edit, query, export) and
+switches between large tables faster than TablePlus in our tests.
+
 ## Screenshots
 
 | Query editor | Cell editor for JSON |
