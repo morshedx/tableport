@@ -9,7 +9,8 @@ enum SettingsPageID: Hashable {
 
 @MainActor
 func makeSettingsWindow() -> HostedWindow<SettingsView> {
-    HostedWindow(size: NSSize(width: 720, height: 500), autosaveName: "SettingsWindow") {
+    // Resizable: Updates and its version history grow with every release.
+    HostedWindow(size: NSSize(width: 720, height: 500), autosaveName: "SettingsWindow", resizable: true, opensUnfocused: true) {
         SettingsView(settings: .shared)
     }
 }

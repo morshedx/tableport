@@ -11,6 +11,11 @@ extension Updater {
 /// version's. Add the next version's entry before releasing it.
 enum ReleaseNotes {
     static let notes = VersionNotes([
+        "0.1.0-beta.2": [
+            "Settings › Updates has a second switch: Check for updates automatically, on by default.",
+            "The Settings window can be resized, and it opens without a focus ring until you press Tab.",
+            "Settings › About › Report a Problem opens the bug report form on GitHub.",
+        ],
         "0.1.0-beta.1": [
             "First public beta. TablePort is free and open source (Apache-2.0).",
             "PostgreSQL connections with TLS, SSH tunnels, read-only mode and colour tags; passwords stay in the macOS Keychain.",
