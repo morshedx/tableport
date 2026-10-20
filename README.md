@@ -4,6 +4,8 @@
 It is free and open source: a lightweight alternative to TablePlus, Postico
 and pgAdmin, built with Swift and AppKit on a Rust core.
 
+**Requires macOS 14 Sonoma or later on Apple silicon.**
+
 > **Public beta.** TablePort is new. Try it on development data first, and
 > please [report problems](https://github.com/morshedx/tableport/issues/new?template=bug_report.yml).
 
@@ -51,8 +53,13 @@ All screenshots use a made-up demo database.
 3. The first time, macOS blocks the app because it isn't notarized yet. Open
    **System Settings › Privacy & Security** and click **Open Anyway**.
 
-TablePort updates itself (Settings › Updates). It needs macOS 14 or later and
-an Apple silicon Mac.
+TablePort updates itself (Settings › Updates).
+
+### Requirements
+
+- macOS 14 Sonoma or later
+- A Mac with Apple silicon (M1 or later). Intel Macs are not supported yet.
+- PostgreSQL 12 or later
 
 ## Build
 
