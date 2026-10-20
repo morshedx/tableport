@@ -1,6 +1,8 @@
 # TablePort
 
-A fast, native PostgreSQL client for macOS. Free and open source.
+**TablePort is a fast, native PostgreSQL client and database GUI for Mac.**
+It is free and open source: a lightweight alternative to TablePlus, Postico
+and pgAdmin, built with Swift and AppKit on a Rust core.
 
 > **Public beta.** TablePort is new. Try it on development data first, and
 > please [report problems](https://github.com/morshedx/tableport/issues/new?template=bug_report.yml).
