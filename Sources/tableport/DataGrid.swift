@@ -329,7 +329,7 @@ struct DataGrid: NSViewRepresentable {
                 let draft = newRows[newIndex].values[column.name]
                 let text = GridCellPaint.text(for: draft)
                 return GridCellPaint(text: text ?? "DEFAULT", isPlaceholder: text == nil, isDimmed: false, tint: nil,
-                                     accessory: column.kind == .other ? nil : .valueMenu)
+                                     accessory: column.kind == .other ? nil : .valueMenu, isNumeric: column.isNumeric)
             }
             guard rows.indices.contains(row), rows[row].indices.contains(index) else { return nil }
             let stored = rows[row][index]
@@ -346,7 +346,8 @@ struct DataGrid: NSViewRepresentable {
                 text: shown.map { $0.replacingOccurrences(of: "\n", with: "⏎ ") } ?? "NULL",
                 isPlaceholder: shown == nil, isDimmed: deleted,
                 tint: edit == nil ? nil : NSColor.systemYellow.withAlphaComponent(0.3),
-                accessory: accessory
+                accessory: accessory,
+                isNumeric: column.isNumeric
             )
         }
 
@@ -488,6 +489,7 @@ struct DataGrid: NSViewRepresentable {
             table.scrollRowToVisible(row)
             table.scrollColumnToVisible(column + 1)
             field.font = textFont
+            field.alignment = columns.indices.contains(column) && columns[column].isNumeric ? .right : .natural
             field.placeholderString = newRowIndex(row) == nil ? "NULL" : "DEFAULT"
             let cell = table.frameOfCell(atColumn: column + 1, row: row)
             let height = ceil(field.intrinsicContentSize.height)
@@ -795,6 +797,10 @@ final class GridRowView: NSTableRowView {
         let numberFont = AppFont.mono(size: AppSettings.shared.gridFontSize - 1)
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byTruncatingTail
+        // Numbers right-aligned, as in TablePlus, so their digits line up.
+        let numberParagraph = NSMutableParagraphStyle()
+        numberParagraph.lineBreakMode = .byTruncatingTail
+        numberParagraph.alignment = .right
         let lineHeight = ceil(font.ascender - font.descender + font.leading)
         let columns = table.columnIndexes(in: dirtyRect)
         for column in columns where column < table.numberOfColumns {
@@ -823,7 +829,7 @@ final class GridRowView: NSTableRowView {
                 : paint.isPlaceholder ? .tertiaryLabelColor
                 : paint.isDimmed ? .secondaryLabelColor : .labelColor
             (paint.text as NSString).draw(with: textRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: [
-                .font: font, .foregroundColor: color, .paragraphStyle: paragraph,
+                .font: font, .foregroundColor: color, .paragraphStyle: paint.isNumeric ? numberParagraph : paragraph,
             ])
             if let cell = grid.selectedCell, cell.row == row, cell.column == column - 1 {
                 // The outlined cell, as TablePlus marks it.
@@ -1036,6 +1042,7 @@ struct GridCellPaint {
     let isDimmed: Bool
     let tint: NSColor?
     let accessory: Accessory?
+    var isNumeric = false
 
     /// What a draft shows as text; nil for NULL, DEFAULT and no draft.
     static func text(for draft: CellDraft?) -> String? {

@@ -103,3 +103,16 @@ async fn notices_a_killed_connection_and_reconnects_in_place() {
     let new_pid = session.run_query("SELECT pg_backend_pid()::text".into(), 1).await.unwrap().result_sets[0].rows[0][0].clone().unwrap();
     assert_ne!(new_pid, pid, "a new server connection");
 }
+
+#[tokio::test]
+async fn query_results_mark_number_columns() {
+    if !enabled() { return; }
+    let session = DatabaseSession::connect(local("postgres", 5432, TlsMode::Disable)).await.unwrap();
+    let sql = "CREATE TEMP TABLE prices (id int, price numeric(10,2), name text);
+               INSERT INTO prices VALUES (1, 9.99, '007');
+               SELECT id, price, name, 1.5::float8 AS ratio, '12'::varchar AS code FROM prices;
+               SELECT count(*) FROM prices";
+    let result = session.run_query(sql.into(), 10).await.unwrap();
+    assert_eq!(result.result_sets[0].numeric_columns, [true, true, false, true, false]);
+    assert_eq!(result.result_sets[1].numeric_columns, [true]);
+}

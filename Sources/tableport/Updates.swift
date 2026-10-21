@@ -11,6 +11,9 @@ extension Updater {
 /// version's. Add the next version's entry before releasing it.
 enum ReleaseNotes {
     static let notes = VersionNotes([
+        "0.1.0-beta.3": [
+            "Numbers are right-aligned in the data grid and in query results, as in TablePlus, so their digits line up.",
+        ],
         "0.1.0-beta.2": [
             "Settings › Updates has a second switch: Check for updates automatically, on by default.",
             "The Settings window can be resized, and it opens without a focus ring until you press Tab.",

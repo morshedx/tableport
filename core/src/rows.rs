@@ -20,6 +20,9 @@ pub struct Column {
     pub kind: ColumnKind,
     /// The labels of an enum column, in their defined order; empty otherwise.
     pub enum_values: Vec<String>,
+    /// Integers, numeric, floats and money: the grid right-aligns them, so
+    /// digits line up.
+    pub is_numeric: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
@@ -38,7 +41,13 @@ pub enum ColumnKind {
 impl Column {
     /// A column of no special kind, for lists that only need names.
     pub fn plain(name: impl Into<String>, column_type: impl Into<String>) -> Self {
-        Self { name: name.into(), column_type: column_type.into(), kind: ColumnKind::Other, enum_values: Vec::new() }
+        Self {
+            name: name.into(),
+            column_type: column_type.into(),
+            kind: ColumnKind::Other,
+            enum_values: Vec::new(),
+            is_numeric: false,
+        }
     }
 }
 
@@ -129,7 +138,8 @@ impl DatabaseSession {
                     _ => ColumnKind::Other,
                 };
                 let enum_values = labels.map(|labels| labels.split('\u{1f}').map(str::to_string).collect()).unwrap_or_default();
-                Some(Column { name, column_type, kind, enum_values })
+                let is_numeric = category == "N";
+                Some(Column { name, column_type, kind, enum_values, is_numeric })
             })
             .collect())
     }

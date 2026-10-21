@@ -1,6 +1,8 @@
 use std::time::Instant;
 
+use futures_util::future::join_all;
 use futures_util::StreamExt;
+use tokio_postgres::types::{Kind, Type};
 use tokio_postgres::{NoTls, SimpleQueryMessage};
 
 use crate::rows::GRID_CELL_LIMIT;
@@ -14,6 +16,9 @@ pub struct ResultSet {
     pub rows: Vec<Vec<Option<String>>>,
     /// How many rows the statement returned in all.
     pub total_rows: u64,
+    /// One per column: integers, numeric, floats and money, which the grid
+    /// right-aligns. All false when the types couldn't be read.
+    pub numeric_columns: Vec<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -49,6 +54,8 @@ impl DatabaseSession {
             let mut statement_counts = Vec::new();
             // The set that rows are being added to, between RowDescription and CommandComplete.
             let mut open_set = false;
+            // The index of the statement each result set came from.
+            let mut set_statements = Vec::new();
             while let Some(message) = stream.next().await {
                 match message.map_err(map)? {
                     SimpleQueryMessage::RowDescription(columns) => {
@@ -56,7 +63,9 @@ impl DatabaseSession {
                             columns: columns.iter().map(|column| column.name().to_string()).collect(),
                             rows: Vec::new(),
                             total_rows: 0,
+                            numeric_columns: vec![false; columns.len()],
                         });
+                        set_statements.push(statement_counts.len());
                         open_set = true;
                     }
                     SimpleQueryMessage::Row(row) => {
@@ -78,11 +87,29 @@ impl DatabaseSession {
                     _ => {}
                 }
             }
+            let elapsed_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+
+            // The text protocol sends no column types. Describe the statements
+            // that returned rows (all at once, one round trip) to find the
+            // number columns. Nothing runs again: describing only plans.
+            let statements = crate::sql_text::statements(&sql);
+            if statements.len() == statement_counts.len() {
+                let described = join_all(set_statements.iter().map(|&index| client.prepare(&statements[index]))).await;
+                for (set, statement) in result_sets.iter_mut().zip(described) {
+                    // A statement that can't be described on its own (an
+                    // aborted transaction) keeps its columns left-aligned.
+                    let Ok(statement) = statement else { continue };
+                    if statement.columns().len() == set.columns.len() {
+                        set.numeric_columns = statement.columns().iter().map(|column| is_numeric(column.type_())).collect();
+                    }
+                }
+            }
+
             Ok(QueryResult {
                 result_sets,
                 statement_counts,
                 statement_verbs: crate::sql_text::statement_verbs(&sql),
-                elapsed_ms: start.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+                elapsed_ms,
             })
         })
         .await
@@ -102,6 +129,16 @@ impl DatabaseSession {
             result.map_err(|error| DatabaseError::from_postgres(error, &endpoint))
         })
         .await
+    }
+}
+
+fn is_numeric(column_type: &Type) -> bool {
+    match column_type.kind() {
+        Kind::Domain(base) => is_numeric(base),
+        _ => matches!(
+            *column_type,
+            Type::INT2 | Type::INT4 | Type::INT8 | Type::NUMERIC | Type::FLOAT4 | Type::FLOAT8 | Type::MONEY
+        ),
     }
 }
 

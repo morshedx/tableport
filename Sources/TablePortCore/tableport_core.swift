@@ -1537,6 +1537,11 @@ public struct Column: Equatable, Hashable {
      * The labels of an enum column, in their defined order; empty otherwise.
      */
     public var enumValues: [String]
+    /**
+     * Integers, numeric, floats and money: the grid right-aligns them, so
+     * digits line up.
+     */
+    public var isNumeric: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1550,11 +1555,16 @@ public struct Column: Equatable, Hashable {
          */kind: ColumnKind, 
         /**
          * The labels of an enum column, in their defined order; empty otherwise.
-         */enumValues: [String]) {
+         */enumValues: [String], 
+        /**
+         * Integers, numeric, floats and money: the grid right-aligns them, so
+         * digits line up.
+         */isNumeric: Bool) {
         self.name = name
         self.columnType = columnType
         self.kind = kind
         self.enumValues = enumValues
+        self.isNumeric = isNumeric
     }
 
     
@@ -1576,7 +1586,8 @@ public struct FfiConverterTypeColumn: FfiConverterRustBuffer {
                 name: FfiConverterString.read(from: &buf), 
                 columnType: FfiConverterString.read(from: &buf), 
                 kind: FfiConverterTypeColumnKind.read(from: &buf), 
-                enumValues: FfiConverterSequenceString.read(from: &buf)
+                enumValues: FfiConverterSequenceString.read(from: &buf), 
+                isNumeric: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -1585,6 +1596,7 @@ public struct FfiConverterTypeColumn: FfiConverterRustBuffer {
         FfiConverterString.write(value.columnType, into: &buf)
         FfiConverterTypeColumnKind.write(value.kind, into: &buf)
         FfiConverterSequenceString.write(value.enumValues, into: &buf)
+        FfiConverterBool.write(value.isNumeric, into: &buf)
     }
 }
 
@@ -2402,6 +2414,11 @@ public struct ResultSet: Equatable, Hashable {
      * How many rows the statement returned in all.
      */
     public var totalRows: UInt64
+    /**
+     * One per column: integers, numeric, floats and money, which the grid
+     * right-aligns. All false when the types couldn't be read.
+     */
+    public var numericColumns: [Bool]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2411,10 +2428,15 @@ public struct ResultSet: Equatable, Hashable {
          */rows: [[String?]], 
         /**
          * How many rows the statement returned in all.
-         */totalRows: UInt64) {
+         */totalRows: UInt64, 
+        /**
+         * One per column: integers, numeric, floats and money, which the grid
+         * right-aligns. All false when the types couldn't be read.
+         */numericColumns: [Bool]) {
         self.columns = columns
         self.rows = rows
         self.totalRows = totalRows
+        self.numericColumns = numericColumns
     }
 
     
@@ -2435,7 +2457,8 @@ public struct FfiConverterTypeResultSet: FfiConverterRustBuffer {
             try ResultSet(
                 columns: FfiConverterSequenceString.read(from: &buf), 
                 rows: FfiConverterSequenceSequenceOptionString.read(from: &buf), 
-                totalRows: FfiConverterUInt64.read(from: &buf)
+                totalRows: FfiConverterUInt64.read(from: &buf), 
+                numericColumns: FfiConverterSequenceBool.read(from: &buf)
         )
     }
 
@@ -2443,6 +2466,7 @@ public struct FfiConverterTypeResultSet: FfiConverterRustBuffer {
         FfiConverterSequenceString.write(value.columns, into: &buf)
         FfiConverterSequenceSequenceOptionString.write(value.rows, into: &buf)
         FfiConverterUInt64.write(value.totalRows, into: &buf)
+        FfiConverterSequenceBool.write(value.numericColumns, into: &buf)
     }
 }
 
@@ -4428,6 +4452,31 @@ fileprivate struct FfiConverterSequenceUInt64: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterUInt64.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceBool: FfiConverterRustBuffer {
+    typealias SwiftType = [Bool]
+
+    public static func write(_ value: [Bool], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterBool.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Bool] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Bool]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterBool.read(from: &buf))
         }
         return seq
     }

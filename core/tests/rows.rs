@@ -34,6 +34,8 @@ async fn columns_in_table_order() {
         let types: Vec<_> = columns.iter().map(|c| c.column_type.as_str()).collect();
         assert_eq!(names, ["id", "name", "note", "data"]);
         assert_eq!(types, ["integer", "text", "text", "jsonb"]);
+        let numeric: Vec<_> = columns.iter().map(|c| c.is_numeric).collect();
+        assert_eq!(numeric, [true, false, false, false]);
     })
     .await;
 }

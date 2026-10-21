@@ -416,7 +416,7 @@ struct QueryTabView: View {
             Divider()
             if sets.indices.contains(model.selectedResult) {
                 let set = sets[model.selectedResult]
-                DataGrid.readOnly(columns: set.columns, rows: set.rows)
+                DataGrid.readOnly(columns: set.columns, rows: set.rows, numeric: set.numericColumns)
                     .id(model.selectedResult)
             } else {
                 messages

@@ -62,9 +62,13 @@ struct StructureView: View {
 
 extension DataGrid {
     /// A grid with no editing, sorting or keys, for lists like the structure.
-    static func readOnly(columns: [String], rows: [[String?]]) -> DataGrid {
+    /// `numeric`: one per column, true for number columns (right-aligned).
+    static func readOnly(columns: [String], rows: [[String?]], numeric: [Bool] = []) -> DataGrid {
         DataGrid(
-            columns: columns.map { Column(name: $0, columnType: "", kind: .other, enumValues: []) },
+            columns: columns.enumerated().map { index, name in
+                Column(name: name, columnType: "", kind: .other, enumValues: [],
+                       isNumeric: numeric.indices.contains(index) && numeric[index])
+            },
             rows: rows,
             offset: 0,
             sort: nil,

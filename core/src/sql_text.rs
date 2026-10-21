@@ -112,6 +112,12 @@ pub(crate) fn statement_verbs(sql: &str) -> Vec<String> {
         .collect()
 }
 
+/// The text of each statement, in the same order and count as `split`.
+pub(crate) fn statements(sql: &str) -> Vec<String> {
+    let units: Vec<u16> = sql.encode_utf16().collect();
+    split(sql).into_iter().map(|(start, end)| String::from_utf16_lossy(&units[start..end])).collect()
+}
+
 /// The statement around `cursor`, without its `;` and surrounding blank
 /// space. A cursor just after a `;` (or on the blank lines after it) belongs
 /// to the statement before. Semicolons inside quotes, dollar-quoted bodies
