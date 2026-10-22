@@ -593,7 +593,7 @@ uint32_t uniffi_tableport_core_fn_func_grid_cell_limit(RustCallStatus *_Nonnull 
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_DROP_RELATION_SQL
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_DROP_RELATION_SQL
-RustBuffer uniffi_tableport_core_fn_func_drop_relation_sql(RustBuffer relation, int8_t cascade, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_tableport_core_fn_func_drop_relation_sql(RustBuffer relation, int8_t cascade, RustBuffer engine, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_DROP_ROUTINE_SQL
@@ -613,7 +613,7 @@ RustBuffer uniffi_tableport_core_fn_func_refresh_materialized_view_sql(RustBuffe
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_TRUNCATE_SQL
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_TRUNCATE_SQL
-RustBuffer uniffi_tableport_core_fn_func_truncate_sql(RustBuffer relation, int8_t restart_identity, int8_t cascade, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_tableport_core_fn_func_truncate_sql(RustBuffer relation, int8_t restart_identity, int8_t cascade, RustBuffer engine, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_TEST_CONNECTION
@@ -638,12 +638,12 @@ RustBuffer uniffi_tableport_core_fn_func_statement_range(RustBuffer sql, uint32_
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_CREATE_TABLE_SQL
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_CREATE_TABLE_SQL
-RustBuffer uniffi_tableport_core_fn_func_create_table_sql(RustBuffer schema, RustBuffer name, RustBuffer columns, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_tableport_core_fn_func_create_table_sql(RustBuffer schema, RustBuffer name, RustBuffer columns, RustBuffer engine, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_STRUCTURE_CHANGE_SQL
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_STRUCTURE_CHANGE_SQL
-RustBuffer uniffi_tableport_core_fn_func_structure_change_sql(RustBuffer relation, RustBuffer change, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_tableport_core_fn_func_structure_change_sql(RustBuffer relation, RustBuffer change, RustBuffer engine, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_PARSE_CONNECTION_URL

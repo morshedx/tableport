@@ -1,5 +1,5 @@
 use crate::rows::{quote_identifier, quote_literal};
-use crate::{DatabaseError, DatabaseSession, Relation};
+use crate::{DatabaseError, DatabaseSession, Engine, Relation};
 
 /// One column as the Structure view shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Record)]
@@ -52,6 +52,9 @@ pub struct TableStructure {
 #[uniffi::export]
 impl DatabaseSession {
     pub async fn structure(&self, relation: Relation) -> Result<TableStructure, DatabaseError> {
+        if self.engine() == Engine::Sqlite {
+            return self.sqlite_structure(&relation).await;
+        }
         let regclass = relation.regclass()?;
         let column_rows = self
             .text_rows(format!(
@@ -175,7 +178,10 @@ const REFERENTIAL_ACTIONS: &[&str] = &["NO ACTION", "RESTRICT", "CASCADE", "SET 
 /// The statements that make `change` on `relation`, in order. They are run
 /// together, in one transaction, by [`DatabaseSession::apply_structure_change`].
 #[uniffi::export]
-pub fn structure_change_sql(relation: Relation, change: StructureChange) -> Result<Vec<String>, DatabaseError> {
+pub fn structure_change_sql(relation: Relation, change: StructureChange, engine: Engine) -> Result<Vec<String>, DatabaseError> {
+    if engine == Engine::Sqlite {
+        return sqlite_structure_change_sql(&relation, change);
+    }
     let table = format!("ALTER TABLE {}", relation.quoted_name());
     let schema = quote_identifier(&relation.schema);
     let column_name = |name: &str| -> Result<String, DatabaseError> {
@@ -300,9 +306,12 @@ impl DatabaseSession {
     /// rolls back on its own when a statement fails; an explicit BEGIN would
     /// leave the session in a failed transaction instead.
     pub async fn apply_structure_change(&self, relation: Relation, change: StructureChange) -> Result<(), DatabaseError> {
-        let statements = structure_change_sql(relation, change)?;
+        let statements = structure_change_sql(relation, change, self.engine())?;
         if statements.is_empty() {
             return Ok(());
+        }
+        if let Some(link) = self.sqlite() {
+            return crate::on_runtime(async move { link.apply_checked(statements, 0).await }).await;
         }
         self.execute(statements.join("\n")).await
     }
@@ -319,7 +328,10 @@ pub struct NewTableColumn {
 /// `CREATE TABLE`, then a `COMMENT ON COLUMN` for each comment. Run together
 /// by [`DatabaseSession::create_table`], in one transaction.
 #[uniffi::export]
-pub fn create_table_sql(schema: String, name: String, columns: Vec<NewTableColumn>) -> Result<Vec<String>, DatabaseError> {
+pub fn create_table_sql(schema: String, name: String, columns: Vec<NewTableColumn>, engine: Engine) -> Result<Vec<String>, DatabaseError> {
+    if engine == Engine::Sqlite && columns.iter().any(|entry| non_empty(&entry.column.comment).is_some()) {
+        return Err(DatabaseError::new("SQLite has no column comments."));
+    }
     let name = name.trim();
     if name.is_empty() {
         return Err(DatabaseError::new("The table needs a name."));
@@ -374,6 +386,84 @@ pub fn create_table_sql(schema: String, name: String, columns: Vec<NewTableColum
 impl DatabaseSession {
     /// Creates the table and its column comments as one transaction.
     pub async fn create_table(&self, schema: String, name: String, columns: Vec<NewTableColumn>) -> Result<(), DatabaseError> {
-        self.execute(create_table_sql(schema, name, columns)?.join("\n")).await
+        let statements = create_table_sql(schema, name, columns, self.engine())?;
+        if let Some(link) = self.sqlite() {
+            return crate::on_runtime(async move { link.apply_checked(statements, 0).await }).await;
+        }
+        self.execute(statements.join("\n")).await
+    }
+}
+
+/// What SQLite can change in place. A column's type, NULL or default and
+/// constraints need a table rebuild, which comes in its own step; until
+/// then they are refused with the reason, and nothing changes.
+fn sqlite_structure_change_sql(relation: &Relation, change: StructureChange) -> Result<Vec<String>, DatabaseError> {
+    let table = format!("ALTER TABLE {}", relation.quoted_name());
+    let rebuild = |what: &str| {
+        DatabaseError::new(format!("SQLite can't {what} in place. TablePort will do it by rebuilding the table in a later version."))
+    };
+    let column_name = |name: &str| -> Result<String, DatabaseError> {
+        if name.trim().is_empty() {
+            return Err(DatabaseError::new("The column needs a name."));
+        }
+        Ok(quote_identifier(name.trim()))
+    };
+    match change {
+        StructureChange::AddColumn { column } => {
+            if non_empty(&column.comment).is_some() {
+                return Err(DatabaseError::new("SQLite has no column comments."));
+            }
+            let column_type = column.column_type.trim();
+            let mut sql = format!("{table} ADD COLUMN {} {column_type}", column_name(&column.name)?);
+            if !column.nullable {
+                sql += " NOT NULL";
+            }
+            if let Some(default) = non_empty(&column.default_value) {
+                sql += &format!(" DEFAULT {default}");
+            }
+            Ok(vec![sql + ";"])
+        }
+        StructureChange::EditColumn { original, column } => {
+            if column.column_type.trim() != original.column_type {
+                return Err(rebuild("change a column's type"));
+            }
+            if column.nullable != original.nullable {
+                return Err(rebuild("change whether a column allows NULL"));
+            }
+            if non_empty(&column.default_value) != non_empty(&original.default_value) {
+                return Err(rebuild("change a column's default"));
+            }
+            if non_empty(&column.comment).is_some() {
+                return Err(DatabaseError::new("SQLite has no column comments."));
+            }
+            let name = column_name(&column.name)?;
+            if column.name.trim() == original.name {
+                return Ok(Vec::new());
+            }
+            Ok(vec![format!("{table} RENAME COLUMN {} TO {name};", quote_identifier(&original.name))])
+        }
+        StructureChange::DropColumn { name, .. } => Ok(vec![format!("{table} DROP COLUMN {};", column_name(&name)?)]),
+        StructureChange::AddIndex { name, columns, unique } => {
+            if columns.is_empty() {
+                return Err(DatabaseError::new("Choose at least one column for the index."));
+            }
+            if name.trim().is_empty() {
+                return Err(DatabaseError::new("The index needs a name."));
+            }
+            // SQLite names the schema on the index, and the table without it.
+            let columns = columns.iter().map(|column| quote_identifier(column)).collect::<Vec<_>>().join(", ");
+            Ok(vec![format!(
+                "CREATE {}INDEX {}.{} ON {} ({columns});",
+                if unique { "UNIQUE " } else { "" },
+                quote_identifier(&relation.schema),
+                quote_identifier(name.trim()),
+                quote_identifier(&relation.name)
+            )])
+        }
+        StructureChange::DropIndex { name, .. } => {
+            Ok(vec![format!("DROP INDEX {}.{};", quote_identifier(&relation.schema), quote_identifier(&name))])
+        }
+        StructureChange::AddForeignKey { .. } => Err(rebuild("add a foreign key")),
+        StructureChange::DropConstraint { .. } => Err(rebuild("drop a constraint")),
     }
 }

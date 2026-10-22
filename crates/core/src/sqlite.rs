@@ -432,3 +432,112 @@ impl DatabaseSession {
             .collect())
     }
 }
+
+// MARK: - Structure
+
+use crate::structure::{ColumnDetail, ConstraintDetail, ConstraintKind, IndexDetail, TableStructure};
+
+impl DatabaseSession {
+    /// Columns, indexes and constraints. SQLite constraints rarely have
+    /// names, so they get descriptive ones ("primary key", "foreign key 1").
+    pub(crate) async fn sqlite_structure(&self, relation: &Relation) -> Result<TableStructure, DatabaseError> {
+        let table = quote_literal(&relation.name)?;
+        let schema = quote_literal(&relation.schema)?;
+        let column_rows = self
+            .text_rows(format!("SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info({table}, {schema}) ORDER BY cid"))
+            .await?;
+        let mut key: Vec<(i64, String)> = Vec::new();
+        let columns = column_rows
+            .into_iter()
+            .filter_map(|row| {
+                let [Some(name), column_type, Some(not_null), default_value, Some(pk)] = <[Option<String>; 5]>::try_from(row).ok()? else {
+                    return None;
+                };
+                if let Ok(position) = pk.parse::<i64>() {
+                    if position > 0 {
+                        key.push((position, name.clone()));
+                    }
+                }
+                Some(ColumnDetail {
+                    name,
+                    column_type: column_type.unwrap_or_default(),
+                    // A primary key column is never NULL, though SQLite only
+                    // enforces it for INTEGER keys.
+                    nullable: not_null == "0" && pk == "0",
+                    default_value,
+                    comment: None,
+                })
+            })
+            .collect();
+        key.sort();
+
+        let index_rows = self
+            .text_rows(format!(
+                "SELECT l.name, l.\"unique\", l.origin, m.sql, \
+                        (SELECT group_concat(name, ', ') FROM pragma_index_info(l.name, {schema})) \
+                 FROM pragma_index_list({table}, {schema}) l \
+                 LEFT JOIN {}.sqlite_master m ON m.type = 'index' AND m.name = l.name ORDER BY l.origin <> 'pk', l.name",
+                quote_identifier(&relation.schema)
+            ))
+            .await?;
+        let mut constraints = Vec::new();
+        if !key.is_empty() {
+            let names = key.iter().map(|(_, name)| name.as_str()).collect::<Vec<_>>().join(", ");
+            constraints.push(ConstraintDetail {
+                name: "primary key".into(),
+                kind: ConstraintKind::PrimaryKey,
+                definition: format!("PRIMARY KEY ({names})"),
+            });
+        }
+        let mut indexes = Vec::new();
+        for row in index_rows {
+            let [Some(name), Some(unique), Some(origin), sql, columns] = <[Option<String>; 5]>::try_from(row).unwrap_or_default() else {
+                continue;
+            };
+            let columns = columns.unwrap_or_default();
+            if origin == "u" {
+                constraints.push(ConstraintDetail {
+                    name: name.clone(),
+                    kind: ConstraintKind::Unique,
+                    definition: format!("UNIQUE ({columns})"),
+                });
+            }
+            indexes.push(IndexDetail {
+                // Automatic indexes have no SQL of their own.
+                definition: sql.unwrap_or_else(|| format!("automatic index on ({columns})")),
+                name,
+                is_unique: unique == "1",
+                is_primary: origin == "pk",
+            });
+        }
+
+        let key_rows = self
+            .text_rows(format!(
+                "SELECT id, \"from\", \"table\", \"to\", on_update, on_delete FROM pragma_foreign_key_list({table}, {schema}) ORDER BY id, seq"
+            ))
+            .await?;
+        let mut keys: Vec<(String, Vec<String>, String, Vec<String>, String)> = Vec::new();
+        for row in key_rows {
+            let [Some(id), Some(from), Some(referenced), to, _, Some(on_delete)] = <[Option<String>; 6]>::try_from(row).unwrap_or_default() else {
+                continue;
+            };
+            match keys.last_mut().filter(|entry| entry.0 == id) {
+                Some(entry) => {
+                    entry.1.push(from);
+                    entry.3.push(to.unwrap_or_default());
+                }
+                None => keys.push((id, vec![from], referenced, vec![to.unwrap_or_default()], on_delete)),
+            }
+        }
+        for (index, (_, from, referenced, to, on_delete)) in keys.into_iter().enumerate() {
+            let target = if to.iter().all(String::is_empty) { String::new() } else { format!("({})", to.join(", ")) };
+            let action = if on_delete == "NO ACTION" { String::new() } else { format!(" ON DELETE {on_delete}") };
+            constraints.push(ConstraintDetail {
+                name: format!("foreign key {}", index + 1),
+                kind: ConstraintKind::ForeignKey,
+                definition: format!("FOREIGN KEY ({}) REFERENCES {referenced}{target}{action}", from.join(", ")),
+            });
+        }
+        Ok(TableStructure { columns, indexes, constraints })
+    }
+}

@@ -228,7 +228,9 @@ pub fn qualified_name(relation: Relation) -> String {
 
 /// `DROP TABLE|VIEW|MATERIALIZED VIEW|FOREIGN TABLE "schema"."name"`.
 #[uniffi::export]
-pub fn drop_relation_sql(relation: Relation, cascade: bool) -> String {
+pub fn drop_relation_sql(relation: Relation, cascade: bool, engine: crate::Engine) -> String {
+    // SQLite has no CASCADE: foreign keys decide what happens to other rows.
+    let cascade = cascade && engine == crate::Engine::Postgres;
     let kind = match relation.kind {
         RelationKind::Table | RelationKind::PartitionedTable => "TABLE",
         RelationKind::View => "VIEW",
@@ -240,7 +242,11 @@ pub fn drop_relation_sql(relation: Relation, cascade: bool) -> String {
 
 /// `TRUNCATE "schema"."name"`; `restart_identity` resets its sequences.
 #[uniffi::export]
-pub fn truncate_sql(relation: Relation, restart_identity: bool, cascade: bool) -> String {
+pub fn truncate_sql(relation: Relation, restart_identity: bool, cascade: bool, engine: crate::Engine) -> String {
+    // SQLite has no TRUNCATE; DELETE without WHERE empties the table quickly.
+    if engine == crate::Engine::Sqlite {
+        return format!("DELETE FROM {};", relation.quoted_name());
+    }
     format!(
         "TRUNCATE {}{}{};",
         relation.quoted_name(),

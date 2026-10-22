@@ -201,19 +201,22 @@ struct StructureView: View {
 
     private func confirmDrop(_ title: String, option: String, change: @escaping (Bool) -> StructureChange) {
         let relation = model.relation
+        let engine = model.session.engine()
         DangerConfirm.run(
             title: title,
             typeToConfirm: model.isProduction ? relation.name : nil,
-            options: [option],
+            // SQLite drops have no CASCADE.
+            options: engine == .sqlite ? [] : [option],
             button: "Drop",
             sql: { options in
-                ((try? structureChangeSql(relation: relation, change: change(options[0]))) ?? []).joined(separator: "\n")
+                ((try? structureChangeSql(relation: relation, change: change(options.first ?? false), engine: engine)) ?? [])
+                    .joined(separator: "\n")
             }
         ) { _, options in
             Task {
                 do {
                     failure = nil
-                    try await model.applyStructure(change(options[0]))
+                    try await model.applyStructure(change(options.first ?? false))
                 } catch {
                     failure = error.displayMessage
                 }
@@ -256,7 +259,7 @@ private struct ChangeFooter: View {
 
     private var preview: Result<[String], Error>? {
         guard let change else { return nil }
-        return Result { try structureChangeSql(relation: model.relation, change: change) }
+        return Result { try structureChangeSql(relation: model.relation, change: change, engine: model.session.engine()) }
     }
 
     var body: some View {
@@ -435,6 +438,13 @@ struct NewTableSheet: View {
     init(workspace: WorkspaceModel) {
         self.workspace = workspace
         _schema = State(initialValue: workspace.sidebar.schema)
+        // SQLite's INTEGER PRIMARY KEY numbers new rows itself.
+        if workspace.session.engine() == .sqlite {
+            _rows = State(initialValue: [
+                Row(name: "id", columnType: "INTEGER", primaryKey: true, nullable: false),
+                Row(name: "", columnType: "TEXT", primaryKey: false, nullable: true),
+            ])
+        }
     }
 
     /// Rows left with no name are ignored, so a spare empty row is harmless.
@@ -448,7 +458,7 @@ struct NewTableSheet: View {
     }
 
     private var preview: Result<[String], Error> {
-        Result { try createTableSql(schema: schema, name: name, columns: columns) }
+        Result { try createTableSql(schema: schema, name: name, columns: columns, engine: workspace.session.engine()) }
     }
 
     var body: some View {

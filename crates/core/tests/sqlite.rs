@@ -241,3 +241,49 @@ async fn exports_and_reads_full_values() {
     let full = session.full_rows(users(), columns, key, vec![vec!["1".into()]]).await.unwrap();
     assert_eq!(full[0][4].as_deref(), Some("\\xcafe"));
 }
+
+#[tokio::test]
+async fn reads_and_changes_the_structure() {
+    use tableport_core::{create_table_sql, drop_relation_sql, structure_change_sql, truncate_sql, ColumnSpec, ConstraintKind, NewTableColumn, StructureChange};
+    let file = TempDatabase::new("structure", &(SHOP.to_string() + "CREATE UNIQUE INDEX users_name ON users (name);"));
+    let session = DatabaseSession::connect(file.settings(false)).await.unwrap();
+    let structure = session.structure(users()).await.unwrap();
+    assert_eq!(structure.columns.len(), 6);
+    assert!(!structure.columns[0].nullable, "the INTEGER PRIMARY KEY is never NULL");
+    assert!(structure.indexes.iter().any(|index| index.name == "users_name" && index.is_unique && index.definition.starts_with("CREATE UNIQUE INDEX")));
+    let kinds: Vec<_> = structure.constraints.iter().map(|c| (c.kind, c.definition.as_str())).collect();
+    assert!(kinds.contains(&(ConstraintKind::PrimaryKey, "PRIMARY KEY (id)")), "{kinds:?}");
+    assert!(kinds.contains(&(ConstraintKind::ForeignKey, "FOREIGN KEY (team_id) REFERENCES teams(id)")), "{kinds:?}");
+
+    let spec = |name: &str, column_type: &str| ColumnSpec { name: name.into(), column_type: column_type.into(), nullable: true, default_value: None, comment: None };
+    // In place: add, rename, index, drop.
+    session.apply_structure_change(users(), StructureChange::AddColumn { column: spec("email", "TEXT") }).await.unwrap();
+    let original = session.structure(users()).await.unwrap().columns.into_iter().find(|c| c.name == "email").unwrap();
+    session.apply_structure_change(users(), StructureChange::EditColumn { original: original.clone(), column: spec("mail", "TEXT") }).await.unwrap();
+    session.apply_structure_change(users(), StructureChange::AddIndex { name: "users_mail".into(), columns: vec!["mail".into()], unique: false }).await.unwrap();
+    assert!(session.structure(users()).await.unwrap().indexes.iter().any(|index| index.name == "users_mail"));
+    session.apply_structure_change(users(), StructureChange::DropIndex { name: "users_mail".into(), cascade: false }).await.unwrap();
+    session.apply_structure_change(users(), StructureChange::DropColumn { name: "mail".into(), cascade: false }).await.unwrap();
+    assert_eq!(session.structure(users()).await.unwrap().columns.len(), 6);
+
+    // Not in place: refused with the reason, nothing changed.
+    let renamed = ColumnSpec { column_type: "INTEGER".into(), ..spec("name", "INTEGER") };
+    let column = session.structure(users()).await.unwrap().columns[1].clone();
+    let error = structure_change_sql(users(), StructureChange::EditColumn { original: column, column: renamed }, Engine::Sqlite).unwrap_err();
+    assert!(error.message().contains("type"), "{error}");
+
+    // Truncate and drop are SQLite's own statements.
+    assert_eq!(truncate_sql(users(), true, true, Engine::Sqlite), r#"DELETE FROM "main"."users";"#);
+    assert_eq!(drop_relation_sql(users(), true, Engine::Sqlite), r#"DROP TABLE "main"."users";"#);
+
+    // New table, with SQLite's own key type.
+    let columns = vec![
+        NewTableColumn { column: ColumnSpec { nullable: false, ..spec("id", "INTEGER") }, primary_key: true },
+        NewTableColumn { column: spec("title", "TEXT"), primary_key: false },
+    ];
+    assert!(create_table_sql("main".into(), "posts".into(), columns.clone(), Engine::Sqlite).is_ok());
+    session.create_table("main".into(), "posts".into(), columns).await.unwrap();
+    session.execute("INSERT INTO posts (title) VALUES ('hello')".into()).await.unwrap();
+    let rows = session.run_query("SELECT id FROM posts".into(), 1).await.unwrap();
+    assert_eq!(rows.result_sets[0].rows[0][0].as_deref(), Some("1"), "INTEGER PRIMARY KEY numbers rows itself");
+}

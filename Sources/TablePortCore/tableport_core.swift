@@ -6741,12 +6741,13 @@ public func gridCellLimit() -> UInt32  {
 /**
  * `DROP TABLE|VIEW|MATERIALIZED VIEW|FOREIGN TABLE "schema"."name"`.
  */
-public func dropRelationSql(relation: Relation, cascade: Bool) -> String  {
+public func dropRelationSql(relation: Relation, cascade: Bool, engine: Engine) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_tableport_core_fn_func_drop_relation_sql(
         FfiConverterTypeRelation_lower(relation),
-        FfiConverterBool.lower(cascade),uniffiCallStatus
+        FfiConverterBool.lower(cascade),
+        FfiConverterTypeEngine_lower(engine),uniffiCallStatus
     )
 })
 }
@@ -6789,13 +6790,14 @@ public func refreshMaterializedViewSql(relation: Relation) -> String  {
 /**
  * `TRUNCATE "schema"."name"`; `restart_identity` resets its sequences.
  */
-public func truncateSql(relation: Relation, restartIdentity: Bool, cascade: Bool) -> String  {
+public func truncateSql(relation: Relation, restartIdentity: Bool, cascade: Bool, engine: Engine) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_tableport_core_fn_func_truncate_sql(
         FfiConverterTypeRelation_lower(relation),
         FfiConverterBool.lower(restartIdentity),
-        FfiConverterBool.lower(cascade),uniffiCallStatus
+        FfiConverterBool.lower(cascade),
+        FfiConverterTypeEngine_lower(engine),uniffiCallStatus
     )
 })
 }
@@ -6860,13 +6862,14 @@ public func statementRange(sql: String, cursor: UInt32) -> TextRange?  {
  * `CREATE TABLE`, then a `COMMENT ON COLUMN` for each comment. Run together
  * by [`DatabaseSession::create_table`], in one transaction.
  */
-public func createTableSql(schema: String, name: String, columns: [NewTableColumn])throws  -> [String]  {
+public func createTableSql(schema: String, name: String, columns: [NewTableColumn], engine: Engine)throws  -> [String]  {
     return try  FfiConverterSequenceString.lift(try rustCallWithError(FfiConverterTypeDatabaseError_lift) {
         uniffiCallStatus in
     uniffi_tableport_core_fn_func_create_table_sql(
         FfiConverterString.lower(schema),
         FfiConverterString.lower(name),
-        FfiConverterSequenceTypeNewTableColumn.lower(columns),uniffiCallStatus
+        FfiConverterSequenceTypeNewTableColumn.lower(columns),
+        FfiConverterTypeEngine_lower(engine),uniffiCallStatus
     )
 })
 }
@@ -6874,12 +6877,13 @@ public func createTableSql(schema: String, name: String, columns: [NewTableColum
  * The statements that make `change` on `relation`, in order. They are run
  * together, in one transaction, by [`DatabaseSession::apply_structure_change`].
  */
-public func structureChangeSql(relation: Relation, change: StructureChange)throws  -> [String]  {
+public func structureChangeSql(relation: Relation, change: StructureChange, engine: Engine)throws  -> [String]  {
     return try  FfiConverterSequenceString.lift(try rustCallWithError(FfiConverterTypeDatabaseError_lift) {
         uniffiCallStatus in
     uniffi_tableport_core_fn_func_structure_change_sql(
         FfiConverterTypeRelation_lower(relation),
-        FfiConverterTypeStructureChange_lower(change),uniffiCallStatus
+        FfiConverterTypeStructureChange_lower(change),
+        FfiConverterTypeEngine_lower(engine),uniffiCallStatus
     )
 })
 }
@@ -6943,7 +6947,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tableport_core_checksum_func_grid_cell_limit() != 9110) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tableport_core_checksum_func_drop_relation_sql() != 59614) {
+    if (uniffi_tableport_core_checksum_func_drop_relation_sql() != 6918) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_func_drop_routine_sql() != 9876) {
@@ -6955,7 +6959,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tableport_core_checksum_func_refresh_materialized_view_sql() != 42390) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tableport_core_checksum_func_truncate_sql() != 29929) {
+    if (uniffi_tableport_core_checksum_func_truncate_sql() != 1084) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_func_test_connection() != 15594) {
@@ -6970,10 +6974,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tableport_core_checksum_func_statement_range() != 4856) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tableport_core_checksum_func_create_table_sql() != 15145) {
+    if (uniffi_tableport_core_checksum_func_create_table_sql() != 20865) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tableport_core_checksum_func_structure_change_sql() != 56182) {
+    if (uniffi_tableport_core_checksum_func_structure_change_sql() != 62335) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_func_parse_connection_url() != 3082) {

@@ -61,7 +61,7 @@ async fn reads_columns_indexes_and_constraints() {
 
 mod changes {
     use super::common::{enabled, with_schema};
-    use tableport_core::{structure_change_sql, ColumnDetail, ColumnSpec, Relation, RelationKind, StructureChange};
+    use tableport_core::{structure_change_sql, ColumnDetail, ColumnSpec, Engine, Relation, RelationKind, StructureChange};
 
     fn users(schema: &str) -> Relation {
         Relation { schema: schema.into(), name: "users".into(), kind: RelationKind::Table }
@@ -77,6 +77,7 @@ mod changes {
         let sql = structure_change_sql(
             users("public"),
             StructureChange::EditColumn { original, column: spec("years", "integer", false, Some("0")) },
+            Engine::Postgres,
         )
         .unwrap();
         assert_eq!(sql, [
@@ -88,28 +89,28 @@ mod changes {
         // Nothing changed: nothing to run.
         let same = ColumnDetail { name: "id".into(), column_type: "integer".into(), nullable: false, default_value: Some("GENERATED ALWAYS AS IDENTITY".into()), comment: None };
         let unchanged = StructureChange::EditColumn { original: same, column: spec("id", "integer", false, Some("GENERATED ALWAYS AS IDENTITY")) };
-        assert!(structure_change_sql(users("public"), unchanged).unwrap().is_empty());
+        assert!(structure_change_sql(users("public"), unchanged, Engine::Postgres).unwrap().is_empty());
     }
 
     #[test]
     fn add_column_index_and_foreign_key_sql() {
         let mut column = spec("note", "varchar(255)", false, Some("''"));
         column.comment = Some("Shown on the invoice".into());
-        assert_eq!(structure_change_sql(users("s"), StructureChange::AddColumn { column }).unwrap(), [
+        assert_eq!(structure_change_sql(users("s"), StructureChange::AddColumn { column }, Engine::Postgres).unwrap(), [
             r#"ALTER TABLE "s"."users" ADD COLUMN "note" varchar(255) NOT NULL DEFAULT '';"#,
             r#"COMMENT ON COLUMN "s"."users"."note" IS 'Shown on the invoice';"#,
         ]);
         let index = StructureChange::AddIndex { name: "users_email_idx".into(), columns: vec!["email".into()], unique: true };
-        assert_eq!(structure_change_sql(users("s"), index).unwrap(), [r#"CREATE UNIQUE INDEX "users_email_idx" ON "s"."users" ("email");"#]);
+        assert_eq!(structure_change_sql(users("s"), index, Engine::Postgres).unwrap(), [r#"CREATE UNIQUE INDEX "users_email_idx" ON "s"."users" ("email");"#]);
         let teams = Relation { schema: "s".into(), name: "teams".into(), kind: RelationKind::Table };
         let key = StructureChange::AddForeignKey {
             name: None, column: "team_id".into(), referenced: teams, referenced_column: "id".into(), on_delete: Some("set null".into()),
         };
-        assert_eq!(structure_change_sql(users("s"), key).unwrap(), [
+        assert_eq!(structure_change_sql(users("s"), key, Engine::Postgres).unwrap(), [
             r#"ALTER TABLE "s"."users" ADD FOREIGN KEY ("team_id") REFERENCES "s"."teams" ("id") ON DELETE SET NULL;"#,
         ]);
         let bad = StructureChange::AddColumn { column: spec(" ", "text", true, None) };
-        assert!(structure_change_sql(users("s"), bad).is_err());
+        assert!(structure_change_sql(users("s"), bad, Engine::Postgres).is_err());
     }
 
     #[tokio::test]
@@ -139,7 +140,7 @@ mod changes {
 
 mod create {
     use super::common::{enabled, with_schema};
-    use tableport_core::{create_table_sql, ColumnSpec, NewTableColumn, Relation, RelationKind};
+    use tableport_core::{create_table_sql, ColumnSpec, Engine, NewTableColumn, Relation, RelationKind};
 
     fn column(name: &str, column_type: &str, nullable: bool, default_value: Option<&str>, primary_key: bool) -> NewTableColumn {
         NewTableColumn {
@@ -156,15 +157,15 @@ mod create {
             column("id", "bigserial", false, None, true),
             email,
             column("created_at", "timestamptz", false, Some("now()"), false),
-        ])
+        ], Engine::Postgres)
         .unwrap();
         assert_eq!(sql, [
             "CREATE TABLE \"public\".\"Users\" (\n  \"id\" bigserial,\n  \"email\" text NOT NULL,\n  \"created_at\" timestamptz NOT NULL DEFAULT now(),\n  PRIMARY KEY (\"id\")\n);",
             "COMMENT ON COLUMN \"public\".\"Users\".\"email\" IS 'Login name';",
         ]);
-        assert!(create_table_sql("public".into(), "t".into(), vec![column("a", "int", true, None, false), column("a", "int", true, None, false)]).is_err());
-        assert!(create_table_sql("public".into(), " ".into(), vec![column("a", "int", true, None, false)]).is_err());
-        assert!(create_table_sql("public".into(), "t".into(), vec![]).is_err());
+        assert!(create_table_sql("public".into(), "t".into(), vec![column("a", "int", true, None, false), column("a", "int", true, None, false)], Engine::Postgres).is_err());
+        assert!(create_table_sql("public".into(), " ".into(), vec![column("a", "int", true, None, false)], Engine::Postgres).is_err());
+        assert!(create_table_sql("public".into(), "t".into(), vec![], Engine::Postgres).is_err());
     }
 
     #[tokio::test]
