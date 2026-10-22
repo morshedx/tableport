@@ -1,4 +1,4 @@
-use crate::rows::{quote_identifier, quote_literal};
+use crate::rows::{quote_identifier, quote_literal, Dialect};
 use crate::{DatabaseError, DatabaseSession};
 
 /// The kinds of relation the sidebar lists, from `pg_class.relkind`.
@@ -64,6 +64,10 @@ pub struct ForeignKey {
 impl DatabaseSession {
     /// The databases the user can connect to, sorted by name.
     pub async fn databases(&self) -> Result<Vec<String>, DatabaseError> {
+        // A SQLite connection is one file.
+        if self.dialect() == Dialect::Sqlite {
+            return Ok(vec![self.settings().database]);
+        }
         let rows = self
             .text_rows(
                 "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname".into(),
@@ -75,6 +79,9 @@ impl DatabaseSession {
     /// The user's schemas with their tables, views and materialized views.
     /// System schemas are left out; schemas without relations are kept.
     pub async fn schemas(&self) -> Result<Vec<SchemaContents>, DatabaseError> {
+        if self.dialect() == Dialect::Sqlite {
+            return self.sqlite_schemas().await;
+        }
         let schema_rows = self
             .text_rows(
                 r"SELECT nspname FROM pg_namespace
@@ -113,6 +120,9 @@ impl DatabaseSession {
 
     /// The primary key columns, in key order; empty without a primary key.
     pub async fn primary_key(&self, relation: Relation) -> Result<Vec<String>, DatabaseError> {
+        if self.dialect() == Dialect::Sqlite {
+            return self.sqlite_primary_key(&relation).await;
+        }
         let rows = self
             .text_rows(format!(
                 "SELECT a.attname
@@ -127,6 +137,9 @@ impl DatabaseSession {
     }
 
     pub async fn foreign_keys(&self, relation: Relation) -> Result<Vec<ForeignKey>, DatabaseError> {
+        if self.dialect() == Dialect::Sqlite {
+            return self.sqlite_foreign_keys(&relation).await;
+        }
         let rows = self
             .text_rows(format!(
                 "SELECT a.attname, rn.nspname, rc.relname, rc.relkind, ra.attname
@@ -172,6 +185,10 @@ impl DatabaseSession {
     /// The schema's own functions and procedures; aggregates, window
     /// functions and those that extensions installed are left out.
     pub async fn routines(&self, schema: String) -> Result<Vec<Routine>, DatabaseError> {
+        // SQLite has no stored functions.
+        if self.dialect() == Dialect::Sqlite {
+            return Ok(Vec::new());
+        }
         let rows = self
             .text_rows(format!(
                 "SELECT p.oid, p.proname, pg_get_function_identity_arguments(p.oid), p.prokind

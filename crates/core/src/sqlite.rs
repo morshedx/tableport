@@ -123,3 +123,111 @@ pub(crate) fn text(value: ValueRef<'_>) -> Option<String> {
 pub(crate) fn sqlite_error(error: &rusqlite::Error) -> DatabaseError {
     DatabaseError::new(error.to_string())
 }
+
+// MARK: - Catalog
+
+use crate::rows::{quote_identifier, quote_literal, Column, ColumnKind};
+use crate::schema::{ForeignKey, Relation, RelationKind, SchemaContents};
+use crate::DatabaseSession;
+
+impl DatabaseSession {
+    /// `main`, `temp` when it has tables, and attached databases, each with
+    /// its tables and views. SQLite's own tables are left out.
+    pub(crate) async fn sqlite_schemas(&self) -> Result<Vec<SchemaContents>, DatabaseError> {
+        let names: Vec<String> = self
+            .text_rows("SELECT name FROM pragma_database_list ORDER BY seq".into())
+            .await?
+            .into_iter()
+            .filter_map(|row| row.into_iter().next().flatten())
+            .collect();
+        let mut schemas = Vec::new();
+        for name in names {
+            let rows = self
+                .text_rows(format!(
+                    "SELECT name, type FROM {}.sqlite_master \
+                     WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
+                    quote_identifier(&name)
+                ))
+                .await?;
+            let relations: Vec<Relation> = rows
+                .into_iter()
+                .filter_map(|row| {
+                    let [Some(table), Some(kind)] = <[Option<String>; 2]>::try_from(row).ok()? else { return None };
+                    let kind = if kind == "view" { RelationKind::View } else { RelationKind::Table };
+                    Some(Relation { schema: name.clone(), name: table, kind })
+                })
+                .collect();
+            if name == "temp" && relations.is_empty() {
+                continue;
+            }
+            schemas.push(SchemaContents { name, relations });
+        }
+        Ok(schemas)
+    }
+
+    /// Columns from `pragma_table_info`, typed by SQLite's affinity rules:
+    /// the declared type is free text, and its words decide.
+    pub(crate) async fn sqlite_columns(&self, relation: &Relation) -> Result<Vec<Column>, DatabaseError> {
+        let rows = self
+            .text_rows(format!(
+                "SELECT name, type FROM pragma_table_info({}, {}) ORDER BY cid",
+                quote_literal(&relation.name)?,
+                quote_literal(&relation.schema)?
+            ))
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let [Some(name), column_type] = <[Option<String>; 2]>::try_from(row).ok()? else { return None };
+                let column_type = column_type.unwrap_or_default();
+                let upper = column_type.to_uppercase();
+                let is_numeric = ["INT", "REAL", "FLOA", "DOUB", "NUMERIC", "DECIMAL"].iter().any(|word| upper.contains(word));
+                // Dates are text in SQLite; the date picker writes the forms
+                // SQLite's date functions read.
+                let kind = if upper.contains("TIMESTAMP") || upper.contains("DATETIME") {
+                    ColumnKind::Timestamp
+                } else if upper.contains("DATE") {
+                    ColumnKind::Date
+                } else if upper.contains("TIME") {
+                    ColumnKind::Time
+                } else {
+                    ColumnKind::Other
+                };
+                Some(Column { name, column_type, kind, enum_values: Vec::new(), is_numeric })
+            })
+            .collect())
+    }
+
+    pub(crate) async fn sqlite_primary_key(&self, relation: &Relation) -> Result<Vec<String>, DatabaseError> {
+        let rows = self
+            .text_rows(format!(
+                "SELECT name FROM pragma_table_info({}, {}) WHERE pk > 0 ORDER BY pk",
+                quote_literal(&relation.name)?,
+                quote_literal(&relation.schema)?
+            ))
+            .await?;
+        Ok(rows.into_iter().filter_map(|row| row.into_iter().next().flatten()).collect())
+    }
+
+    /// Single-column foreign keys that name the referenced column, as for
+    /// PostgreSQL: following a key filters the other table by one column.
+    pub(crate) async fn sqlite_foreign_keys(&self, relation: &Relation) -> Result<Vec<ForeignKey>, DatabaseError> {
+        let list = format!("pragma_foreign_key_list({}, {})", quote_literal(&relation.name)?, quote_literal(&relation.schema)?);
+        let rows = self
+            .text_rows(format!(
+                "SELECT f.\"from\", f.\"table\", f.\"to\" FROM {list} f \
+                 WHERE f.\"to\" IS NOT NULL AND (SELECT count(*) FROM {list} g WHERE g.id = f.id) = 1 ORDER BY f.id"
+            ))
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let [Some(column), Some(table), Some(referenced_column)] = <[Option<String>; 3]>::try_from(row).ok()? else {
+                    return None;
+                };
+                let referenced_relation = Relation { schema: relation.schema.clone(), name: table, kind: RelationKind::Table };
+                Some(ForeignKey { column, referenced_relation, referenced_column })
+            })
+            .collect())
+    }
+}

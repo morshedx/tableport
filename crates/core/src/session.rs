@@ -207,6 +207,13 @@ impl DatabaseSession {
         }
     }
 
+    pub(crate) fn dialect(&self) -> crate::rows::Dialect {
+        match self.settings.engine {
+            Engine::Postgres => crate::rows::Dialect::Postgres,
+            Engine::Sqlite => crate::rows::Dialect::Sqlite,
+        }
+    }
+
     pub(crate) fn tls(&self) -> Option<postgres_native_tls::MakeTlsConnector> {
         match &*self.read_link() {
             Link::Postgres(link) => link.tls.clone(),

@@ -106,6 +106,9 @@ pub struct RowPage {
 #[uniffi::export]
 impl DatabaseSession {
     pub async fn columns(&self, relation: Relation) -> Result<Vec<Column>, DatabaseError> {
+        if self.dialect() == Dialect::Sqlite {
+            return self.sqlite_columns(&relation).await;
+        }
         let rows = self
             .text_rows(format!(
                 // Enum labels are joined with the unit separator, which a
@@ -154,17 +157,14 @@ impl DatabaseSession {
         offset: u64,
         limit: u64,
     ) -> Result<RowPage, DatabaseError> {
+        let dialect = self.dialect();
         let select_list = if columns.is_empty() {
             "NULL".to_string()
         } else {
-            columns
-                .iter()
-                .map(|column| format!("left({}::text, {GRID_CELL_LIMIT})", quote_identifier(&column.name)))
-                .collect::<Vec<_>>()
-                .join(", ")
+            columns.iter().map(|column| dialect.cell(&quote_identifier(&column.name))).collect::<Vec<_>>().join(", ")
         };
         let mut sql = format!("SELECT {select_list} FROM {}", relation.quoted_name());
-        sql += &where_clause(&filters, &columns)?;
+        sql += &where_clause(&filters, &columns, dialect)?;
         if let Some(sort) = &sort {
             sql += &format!(" ORDER BY {} {}", quote_identifier(&sort.column), if sort.ascending { "ASC" } else { "DESC" });
         } else if !primary_key.is_empty() {
@@ -182,6 +182,10 @@ impl DatabaseSession {
     /// instant on any size. None for views and tables never analyzed. A
     /// partitioned table adds up its partitions.
     pub async fn estimated_row_count(&self, relation: Relation) -> Result<Option<u64>, DatabaseError> {
+        // SQLite keeps no row estimate; a file database counts quickly.
+        if self.dialect() == Dialect::Sqlite {
+            return self.row_count(relation, Vec::new(), Vec::new()).await.map(Some);
+        }
         let name = quote_literal(&relation.quoted_name())?;
         let sql = format!(
             "SELECT CASE WHEN c.relkind = 'p' THEN \
@@ -208,13 +212,59 @@ impl DatabaseSession {
         filters: Vec<RowFilter>,
     ) -> Result<u64, DatabaseError> {
         let mut sql = format!("SELECT count(*) FROM {}", relation.quoted_name());
-        sql += &where_clause(&filters, &columns)?;
+        sql += &where_clause(&filters, &columns, self.dialect())?;
         let rows = self.text_rows(sql).await?;
         rows.first()
             .and_then(|row| row.first())
             .and_then(|cell| cell.as_deref())
             .and_then(|text| text.parse().ok())
             .ok_or_else(|| DatabaseError::new("The server did not return a row count."))
+    }
+}
+
+/// The SQL that differs between engines, for the queries the grid builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Dialect {
+    Postgres,
+    Sqlite,
+}
+
+impl Dialect {
+    /// The value as text.
+    fn text(self, expression: &str) -> String {
+        match self {
+            Dialect::Postgres => format!("{expression}::text"),
+            Dialect::Sqlite => format!("CAST({expression} AS TEXT)"),
+        }
+    }
+
+    /// A grid cell: the first GRID_CELL_LIMIT characters as text. SQLite
+    /// blobs show as `\x…` hex, as PostgreSQL shows bytea.
+    fn cell(self, column: &str) -> String {
+        match self {
+            Dialect::Postgres => format!("left({column}::text, {GRID_CELL_LIMIT})"),
+            Dialect::Sqlite => format!(
+                "CASE WHEN typeof({column}) = 'blob' THEN '\\x' || lower(hex({column})) \
+                 ELSE substr(CAST({column} AS TEXT), 1, {GRID_CELL_LIMIT}) END"
+            ),
+        }
+    }
+
+    /// Case-insensitive match with `\` escaping `%` and `_`.
+    fn contains(self, text: &str, pattern: &str, negated: bool) -> String {
+        let not = if negated { "NOT " } else { "" };
+        match self {
+            Dialect::Postgres => format!("{text} {not}ILIKE {pattern}"),
+            // SQLite's LIKE ignores case (for ASCII) and has no default escape.
+            Dialect::Sqlite => format!("{text} {not}LIKE {pattern} ESCAPE '\\'"),
+        }
+    }
+
+    fn is_distinct_from(self) -> &'static str {
+        match self {
+            Dialect::Postgres => "IS DISTINCT FROM",
+            Dialect::Sqlite => "IS NOT",
+        }
     }
 }
 
@@ -233,11 +283,11 @@ pub(crate) fn quote_literal(text: &str) -> Result<String, DatabaseError> {
 }
 
 /// " WHERE a AND b", or nothing without filters.
-pub(crate) fn where_clause(filters: &[RowFilter], columns: &[Column]) -> Result<String, DatabaseError> {
+pub(crate) fn where_clause(filters: &[RowFilter], columns: &[Column], dialect: Dialect) -> Result<String, DatabaseError> {
     if filters.is_empty() {
         return Ok(String::new());
     }
-    let conditions = filters.iter().map(|filter| filter.sql(columns)).collect::<Result<Vec<_>, _>>()?;
+    let conditions = filters.iter().map(|filter| filter.sql(columns, dialect)).collect::<Result<Vec<_>, _>>()?;
     Ok(format!(" WHERE {}", conditions.join(" AND ")))
 }
 
@@ -246,7 +296,7 @@ impl RowFilter {
     /// column PostgreSQL reads them as the column's type: `id = '5'` works on
     /// an integer column and can use its index. "Any column" compares text,
     /// since one value can't fit every column's type.
-    pub(crate) fn sql(&self, columns: &[Column]) -> Result<String, DatabaseError> {
+    pub(crate) fn sql(&self, columns: &[Column], dialect: Dialect) -> Result<String, DatabaseError> {
         match &self.target {
             FilterTarget::RawSql => {
                 let condition = self.value.trim().trim_end_matches(';').trim();
@@ -256,7 +306,7 @@ impl RowFilter {
                 Ok(format!("({condition})"))
             }
             FilterTarget::Column { name } => {
-                Ok(format!("({})", condition(&quote_identifier(name), false, self.operator, &self.value)?))
+                Ok(format!("({})", condition(&quote_identifier(name), false, self.operator, &self.value, dialect)?))
             }
             FilterTarget::AnyColumn => {
                 if columns.is_empty() {
@@ -264,7 +314,7 @@ impl RowFilter {
                 }
                 let any = columns
                     .iter()
-                    .map(|column| condition(&quote_identifier(&column.name), true, self.operator, &self.value))
+                    .map(|column| condition(&quote_identifier(&column.name), true, self.operator, &self.value, dialect))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(format!("({})", any.join(" OR ")))
             }
@@ -273,9 +323,9 @@ impl RowFilter {
 }
 
 /// One comparison of `column` with `value`; `as_text` casts the column first.
-fn condition(column: &str, as_text: bool, operator: FilterOperator, value: &str) -> Result<String, DatabaseError> {
-    let typed = if as_text { format!("{column}::text") } else { column.to_string() };
-    let text = format!("{column}::text");
+fn condition(column: &str, as_text: bool, operator: FilterOperator, value: &str, dialect: Dialect) -> Result<String, DatabaseError> {
+    let text = dialect.text(column);
+    let typed = if as_text { text.clone() } else { column.to_string() };
     let pattern = |prefix: &str, suffix: &str| -> Result<String, DatabaseError> {
         let escaped = value.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
         quote_literal(&format!("{prefix}{escaped}{suffix}"))
@@ -294,15 +344,15 @@ fn condition(column: &str, as_text: bool, operator: FilterOperator, value: &str)
     };
     Ok(match operator {
         FilterOperator::Equals => format!("{typed} = {}", quote_literal(value)?),
-        FilterOperator::NotEquals => format!("{typed} IS DISTINCT FROM {}", quote_literal(value)?),
+        FilterOperator::NotEquals => format!("{typed} {} {}", dialect.is_distinct_from(), quote_literal(value)?),
         FilterOperator::GreaterThan => format!("{typed} > {}", quote_literal(value)?),
         FilterOperator::GreaterOrEqual => format!("{typed} >= {}", quote_literal(value)?),
         FilterOperator::LessThan => format!("{typed} < {}", quote_literal(value)?),
         FilterOperator::LessOrEqual => format!("{typed} <= {}", quote_literal(value)?),
-        FilterOperator::Contains => format!("{text} ILIKE {}", pattern("%", "%")?),
-        FilterOperator::NotContains => format!("({column} IS NULL OR {text} NOT ILIKE {})", pattern("%", "%")?),
-        FilterOperator::StartsWith => format!("{text} ILIKE {}", pattern("", "%")?),
-        FilterOperator::EndsWith => format!("{text} ILIKE {}", pattern("%", "")?),
+        FilterOperator::Contains => dialect.contains(&text, &pattern("%", "%")?, false),
+        FilterOperator::NotContains => format!("({column} IS NULL OR {})", dialect.contains(&text, &pattern("%", "%")?, true)),
+        FilterOperator::StartsWith => dialect.contains(&text, &pattern("", "%")?, false),
+        FilterOperator::EndsWith => dialect.contains(&text, &pattern("%", "")?, false),
         FilterOperator::Like => format!("{text} LIKE {}", quote_literal(value)?),
         FilterOperator::In => format!("{typed} IN ({})", list()?),
         FilterOperator::NotIn => format!("{typed} NOT IN ({})", list()?),

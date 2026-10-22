@@ -5,7 +5,7 @@ use futures_util::{pin_mut, StreamExt, TryStreamExt};
 use tokio::io::AsyncWriteExt;
 use tokio_postgres::SimpleQueryMessage;
 
-use crate::rows::{quote_identifier, quote_literal, where_clause};
+use crate::rows::{quote_identifier, quote_literal, where_clause, Dialect};
 use crate::{on_runtime, Column, DatabaseError, DatabaseSession, Relation, RowFilter, RowSort};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -47,7 +47,7 @@ impl DatabaseSession {
         format: ExportFormat,
         path: String,
     ) -> Result<u64, DatabaseError> {
-        let select = select_sql(&relation, &columns, &filters, sort.as_ref(), &primary_key, &scope)?;
+        let select = select_sql(&relation, &columns, &filters, sort.as_ref(), &primary_key, &scope, self.dialect())?;
         if format == ExportFormat::Sql && columns.is_empty() {
             return Err(DatabaseError::new("The table's columns are not loaded yet."));
         }
@@ -172,6 +172,7 @@ fn select_sql(
     sort: Option<&RowSort>,
     primary_key: &[String],
     scope: &ExportScope,
+    dialect: Dialect,
 ) -> Result<String, DatabaseError> {
     let select_list = if columns.is_empty() {
         "*".to_string()
@@ -186,7 +187,7 @@ fn select_sql(
             }
             sql += &format!(" WHERE {}", keys_condition(primary_key, keys)?);
         }
-        ExportScope::All | ExportScope::Page { .. } => sql += &where_clause(filters, columns)?,
+        ExportScope::All | ExportScope::Page { .. } => sql += &where_clause(filters, columns, dialect)?,
     }
     if let Some(sort) = sort {
         sql += &format!(" ORDER BY {} {}", quote_identifier(&sort.column), if sort.ascending { "ASC" } else { "DESC" });
