@@ -91,6 +91,8 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 const DEFAULT_ROWS: u64 = 100;
 const MAX_ROWS: u64 = 1000;
 const STATEMENT_TIMEOUT: &str = "30s";
+/// [`STATEMENT_TIMEOUT`] for MySQL, where TablePort stops the query itself.
+const MYSQL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// AI sessions unused this long are closed; the next call opens them again.
 const IDLE_CLOSE: std::time::Duration = std::time::Duration::from_secs(300);
 
@@ -451,7 +453,10 @@ async fn read_query(session: &DatabaseSession, sql: &str, max_rows: u64) -> Resu
     // A subquery of a SELECT: a second statement is a syntax error, and
     // Postgres refuses data-changing WITH clauses there. The line breaks keep
     // a trailing -- comment from swallowing the closing parenthesis.
-    let mut rows: Vec<Value> = if let Some(link) = session.sqlite() {
+    let mut rows: Vec<Value> = if let Some(link) = session.mysql() {
+        let wrapped = format!("SELECT * FROM (\n{}\n) AS ai_query LIMIT {}", statement(sql), max_rows + 1);
+        crate::on_runtime(async move { link.read_only_json(wrapped, MYSQL_TIMEOUT).await }).await?
+    } else if let Some(link) = session.sqlite() {
         // The AI session opened the file read-only, with query_only on: the
         // wrapping only keeps it to one statement and a row limit.
         let wrapped = format!("SELECT * FROM (\n{}\n) LIMIT {}", statement(sql), max_rows + 1);
@@ -480,6 +485,33 @@ async fn read_query(session: &DatabaseSession, sql: &str, max_rows: u64) -> Resu
 }
 
 async fn explain_query(session: &DatabaseSession, sql: &str) -> Result<(String, String), DatabaseError> {
+    if let Some(link) = session.mysql() {
+        // EXPLAIN ANALYZE runs what it explains: only reads may be explained.
+        let verb = crate::sql_text::statement_verbs(sql).into_iter().next().unwrap_or_default();
+        if !["SELECT", "WITH", "VALUES", "TABLE"].contains(&verb.as_str()) {
+            return Err(DatabaseError::new(format!("explain_query explains reads only: SELECT, WITH, VALUES or TABLE, not {verb}.")));
+        }
+        // MySQL draws the plan as a tree; MariaDB gives one row per table.
+        let explain =
+            if link.is_mariadb { format!("EXPLAIN {}", statement(sql)) } else { format!("EXPLAIN FORMAT=TREE {}", statement(sql)) };
+        let (columns, rows) = crate::on_runtime(async move { link.read_only_query(explain, MYSQL_TIMEOUT).await }).await?;
+        let plan: Vec<String> = rows
+            .into_iter()
+            .map(|row| {
+                if columns.len() == 1 {
+                    return row.into_iter().next().and_then(crate::mysql::text).unwrap_or_default();
+                }
+                columns
+                    .iter()
+                    .zip(row)
+                    .filter_map(|(column, value)| crate::mysql::text(value).map(|value| format!("{}={value}", column.name_str())))
+                    .collect::<Vec<_>>()
+                    .join("  ")
+            })
+            .collect();
+        let summary = format!("{} plan lines", plan.iter().map(|line| line.lines().count()).sum::<usize>());
+        return Ok((plan.join("\n"), summary));
+    }
     if session.sqlite().is_some() {
         let rows = session.text_rows(format!("EXPLAIN QUERY PLAN {}", statement(sql))).await?;
         // Columns: id, parent, (unused), detail.

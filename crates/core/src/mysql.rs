@@ -91,6 +91,8 @@ impl MysqlLink {
             .chain(std::iter::once(
                 "SET SESSION sql_mode = CONCAT_WS(',', NULLIF(@@SESSION.sql_mode, ''), 'ANSI_QUOTES', 'NO_BACKSLASH_ESCAPES')".to_string(),
             ))
+            // The catalog joins column lists with GROUP_CONCAT, which cuts at 1024 bytes by default.
+            .chain(std::iter::once("SET SESSION group_concat_max_len = 1048576".to_string()))
             .collect::<Vec<_>>();
         let connect = |use_tls: bool| {
             let internal = Opts::from(base.clone().ssl_opts(tls(use_tls)).setup(internal_setup.clone()));
@@ -372,22 +374,71 @@ impl MysqlLink {
         Ok(count)
     }
 
-    /// One statement's rows as JSON objects, numbers as numbers, for AI access.
-    pub(crate) async fn json_rows(&self, sql: String) -> Result<Vec<serde_json::Value>, DatabaseError> {
-        let mut conn = self.internal().await?;
-        let mut result = conn.query_iter(sql).await.map_err(|error| self.fail(error))?;
-        let columns = result.columns().unwrap_or_else(|| Vec::new().into());
-        let mut rows = Vec::new();
-        while let Some(row) = result.next().await.map_err(|error| self.fail(error))? {
-            let object: serde_json::Map<String, serde_json::Value> = columns
-                .iter()
-                .map(|column| column.name_str().into_owned())
-                .zip(row.unwrap().into_iter().zip(columns.iter()).map(|(value, column)| json(value, column)))
-                .collect();
-            rows.push(serde_json::Value::Object(object));
+    /// One statement for AI access, on the editor connection: a prepared
+    /// statement, which can't hold a second one, in a READ ONLY transaction
+    /// that is always rolled back. The session is read-only too. A timer
+    /// stops the statement with KILL QUERY after `timeout`.
+    pub(crate) async fn read_only_query(
+        &self,
+        sql: String,
+        timeout: Duration,
+    ) -> Result<(Arc<[mysql_async::Column]>, Vec<Vec<Value>>), DatabaseError> {
+        if self.is_closed() {
+            return Err(DatabaseError::new(format!("The connection to {} is closed.", self.endpoint)));
         }
-        result.drop_result().await.map_err(|error| self.fail(error))?;
+        let mut conn = self.editor.lock().await;
+        conn.query_drop("START TRANSACTION READ ONLY").await.map_err(|error| self.fail(error))?;
+        let killer = {
+            let link = self.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(timeout).await;
+                link.cancel().await
+            })
+        };
+        let started = std::time::Instant::now();
+        let outcome: Result<_, mysql_async::Error> = async {
+            let mut result = conn.exec_iter(sql.as_str(), ()).await?;
+            let columns = result.columns().unwrap_or_else(|| Vec::new().into());
+            let rows: Vec<mysql_async::Row> = result.collect().await?;
+            result.drop_result().await?;
+            Ok((columns, rows.into_iter().map(mysql_async::Row::unwrap).collect()))
+        }
+        .await;
+        killer.abort();
+        let rolled_back = conn.query_drop("ROLLBACK").await.map_err(|error| self.fail(error));
+        // GET_LOCK locks outlive the transaction; none may stay behind. Servers
+        // without RELEASE_ALL_LOCKS have no other way to keep one, so its
+        // error there doesn't matter.
+        if let Err(error) = conn.query_drop("DO RELEASE_ALL_LOCKS()").await {
+            if error.is_fatal() {
+                return Err(self.fail(error));
+            }
+        }
+        let rows = outcome.map_err(|error| {
+            if started.elapsed() >= timeout {
+                DatabaseError::new(format!("The query ran longer than {} seconds and was stopped.", timeout.as_secs()))
+            } else {
+                self.fail(error)
+            }
+        })?;
+        rolled_back?;
         Ok(rows)
+    }
+
+    /// [`Self::read_only_query`]'s rows as JSON objects, numbers as numbers.
+    pub(crate) async fn read_only_json(&self, sql: String, timeout: Duration) -> Result<Vec<serde_json::Value>, DatabaseError> {
+        let (columns, rows) = self.read_only_query(sql, timeout).await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let object: serde_json::Map<String, serde_json::Value> = columns
+                    .iter()
+                    .map(|column| column.name_str().into_owned())
+                    .zip(row.into_iter().zip(columns.iter()).map(|(value, column)| json(value, column)))
+                    .collect();
+                serde_json::Value::Object(object)
+            })
+            .collect())
     }
 }
 

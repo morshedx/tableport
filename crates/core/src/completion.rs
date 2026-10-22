@@ -64,6 +64,8 @@ pub struct Completer {
     schemas: Vec<String>,
     /// Schemas searched for unqualified names, in order.
     search_path: Vec<String>,
+    /// MySQL quotes names with backticks; the others with double quotes.
+    backticks: bool,
 }
 
 const MAX_ITEMS: usize = 100;
@@ -73,8 +75,10 @@ impl DatabaseSession {
     /// Reads the catalog for autocomplete: every relation with its columns,
     /// the functions, the schemas and the search path.
     pub async fn completer(&self) -> Result<Arc<Completer>, DatabaseError> {
-        if self.engine() == crate::Engine::Sqlite {
-            return self.sqlite_completer().await;
+        match self.engine() {
+            crate::Engine::Sqlite => return self.sqlite_completer().await,
+            crate::Engine::Mysql => return self.mysql_completer().await,
+            crate::Engine::Postgres => {}
         }
         let relation_rows = self
             .text_rows(
@@ -143,7 +147,7 @@ impl DatabaseSession {
             })
             .collect();
         let first = |rows: Vec<Vec<Option<String>>>| rows.into_iter().filter_map(|row| row.into_iter().next().flatten()).collect();
-        Ok(Arc::new(Completer { relations, functions, schemas: first(schema_rows), search_path: first(path_rows) }))
+        Ok(Arc::new(Completer { relations, functions, schemas: first(schema_rows), search_path: first(path_rows), backticks: false }))
     }
 }
 
@@ -191,18 +195,18 @@ impl Completer {
             // with no columns; it must not hide a schema of that name.
             if let Some(entry) = scope.find(&qualifier).filter(|entry| !entry.columns.is_empty()) {
                 for column in &entry.columns {
-                    list.push(column, quote_if_needed(column), &entry.label, CompletionKind::Column);
+                    list.push(column, self.quote(column), &entry.label, CompletionKind::Column);
                 }
             } else if let Some(relation) = self.relation(None, &qualifier) {
                 for column in &relation.columns {
-                    list.push(column, quote_if_needed(column), &relation.name, CompletionKind::Column);
+                    list.push(column, self.quote(column), &relation.name, CompletionKind::Column);
                 }
             } else if self.schemas.iter().any(|schema| schema.eq_ignore_ascii_case(&qualifier)) {
                 for relation in self.relations.iter().filter(|r| r.schema.eq_ignore_ascii_case(&qualifier)) {
-                    list.push(&relation.name, quote_if_needed(&relation.name), &relation.schema, relation_kind(relation.kind));
+                    list.push(&relation.name, self.quote(&relation.name), &relation.schema, relation_kind(relation.kind));
                 }
                 for (schema, name) in self.functions.iter().filter(|(schema, _)| schema.eq_ignore_ascii_case(&qualifier)) {
-                    list.push(name, quote_if_needed(name), schema, CompletionKind::Function);
+                    list.push(name, self.quote(name), schema, CompletionKind::Function);
                 }
             }
             return Completions { replace_start: utf16_offset(&sql, replace_start), items: list.finish() };
@@ -212,11 +216,11 @@ impl Completer {
             Context::Start => list.keywords(STATEMENT_KEYWORDS),
             Context::Relations => {
                 for cte in &scope.ctes {
-                    list.push(&cte.label, quote_if_needed(&cte.label), "CTE", CompletionKind::Table);
+                    list.push(&cte.label, self.quote(&cte.label), "CTE", CompletionKind::Table);
                 }
                 self.push_relations(&mut list);
                 for schema in &self.schemas {
-                    list.push(schema, quote_if_needed(schema), "schema", CompletionKind::Schema);
+                    list.push(schema, self.quote(schema), "schema", CompletionKind::Schema);
                 }
                 list.keywords(KEYWORDS);
             }
@@ -225,7 +229,7 @@ impl Completer {
                 for entry in &scope.entries {
                     for column in &entry.columns {
                         if seen.insert(column.as_str()) {
-                            list.push(column, quote_if_needed(column), &entry.label, CompletionKind::Column);
+                            list.push(column, self.quote(column), &entry.label, CompletionKind::Column);
                         }
                     }
                 }
@@ -233,7 +237,7 @@ impl Completer {
                 // `cu` → `customers`, then `.` lists its columns.
                 for entry in &scope.entries {
                     let detail = entry.names.first().filter(|name| **name != entry.label).map_or("table", String::as_str);
-                    list.push(&entry.label, quote_if_needed(&entry.label), detail, CompletionKind::Table);
+                    list.push(&entry.label, self.quote(&entry.label), detail, CompletionKind::Table);
                 }
                 // No FROM yet (`SELECT * c`): the name is likely a table.
                 if scope.entries.is_empty() {
@@ -277,9 +281,82 @@ impl DatabaseSession {
             functions,
             schemas: schemas.into_iter().map(|schema| schema.name).collect(),
             search_path: vec!["main".into(), "temp".into()],
+            backticks: false,
         }))
     }
+
+    async fn mysql_completer(&self) -> Result<Arc<Completer>, DatabaseError> {
+        let system = "'mysql', 'information_schema', 'performance_schema', 'sys'";
+        let relation_rows = self
+            .text_rows(format!(
+                "SELECT t.TABLE_SCHEMA, t.TABLE_NAME, t.TABLE_TYPE, \
+                        (SELECT GROUP_CONCAT(c.COLUMN_NAME ORDER BY c.ORDINAL_POSITION SEPARATOR '\u{1f}') \
+                         FROM information_schema.COLUMNS c WHERE c.TABLE_SCHEMA = t.TABLE_SCHEMA AND c.TABLE_NAME = t.TABLE_NAME) \
+                 FROM information_schema.TABLES t \
+                 WHERE t.TABLE_SCHEMA NOT IN ({system}) AND t.TABLE_TYPE IN ('BASE TABLE', 'VIEW') \
+                 ORDER BY t.TABLE_NAME, t.TABLE_SCHEMA"
+            ))
+            .await?;
+        let relations = relation_rows
+            .into_iter()
+            .filter_map(|row| {
+                let [Some(schema), Some(name), Some(kind), columns] = <[Option<String>; 4]>::try_from(row).ok()? else {
+                    return None;
+                };
+                let kind = if kind == "VIEW" { RelationKind::View } else { RelationKind::Table };
+                let columns = columns.map(|columns| columns.split('\u{1f}').map(str::to_string).collect()).unwrap_or_default();
+                Some(CatalogRelation { schema, name, kind, columns })
+            })
+            .collect();
+        let routine_rows = self
+            .text_rows(format!(
+                "SELECT ROUTINE_SCHEMA, ROUTINE_NAME FROM information_schema.ROUTINES \
+                 WHERE ROUTINE_TYPE = 'FUNCTION' AND ROUTINE_SCHEMA NOT IN ({system})"
+            ))
+            .await?;
+        let mut functions: Vec<(String, String)> = MYSQL_FUNCTIONS.iter().map(|name| (String::new(), name.to_string())).collect();
+        functions.extend(routine_rows.into_iter().filter_map(|row| {
+            let [Some(schema), Some(name)] = <[Option<String>; 2]>::try_from(row).ok()? else { return None };
+            Some((schema, name))
+        }));
+        functions.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        functions.dedup();
+        let schemas: Vec<String> = self.schemas().await?.into_iter().map(|schema| schema.name).collect();
+        let current = self.text_rows("SELECT DATABASE()".into()).await?;
+        // Built-in functions belong to no database; the empty schema finds them.
+        let mut search_path = vec![String::new()];
+        search_path.extend(current.into_iter().filter_map(|row| row.into_iter().next().flatten()));
+        Ok(Arc::new(Completer { relations, functions, schemas, search_path, backticks: true }))
+    }
 }
+
+/// MySQL's and MariaDB's common built-in functions.
+const MYSQL_FUNCTIONS: &[&str] = &[
+    "abs", "acos", "adddate", "addtime", "aes_decrypt", "aes_encrypt", "any_value", "ascii", "asin", "atan", "atan2", "avg",
+    "benchmark", "bin", "bit_and", "bit_count", "bit_length", "bit_or", "bit_xor", "cast", "ceil", "ceiling", "char",
+    "char_length", "character_length", "charset", "coalesce", "collation", "concat", "concat_ws", "connection_id", "conv",
+    "convert", "convert_tz", "cos", "cot", "count", "crc32", "cume_dist", "curdate", "current_date", "current_time",
+    "current_timestamp", "current_user", "curtime", "database", "date", "date_add", "date_format", "date_sub", "datediff",
+    "day", "dayname", "dayofmonth", "dayofweek", "dayofyear", "degrees", "dense_rank", "elt", "exp", "export_set",
+    "extract", "field", "find_in_set", "first_value", "floor", "format", "found_rows", "from_base64", "from_days",
+    "from_unixtime", "greatest", "group_concat", "hex", "hour", "if", "ifnull", "inet_aton", "inet_ntoa", "insert",
+    "instr", "is_ipv4", "is_ipv6", "isnull", "json_array", "json_arrayagg", "json_contains", "json_contains_path",
+    "json_depth", "json_extract", "json_insert", "json_keys", "json_length", "json_merge_patch", "json_object",
+    "json_objectagg", "json_overlaps", "json_quote", "json_remove", "json_replace", "json_search", "json_set",
+    "json_type", "json_unquote", "json_valid", "lag", "last_day", "last_insert_id", "last_value", "lcase", "lead",
+    "least", "left", "length", "ln", "localtime", "localtimestamp", "locate", "log", "log10", "log2", "lower", "lpad",
+    "ltrim", "make_set", "makedate", "maketime", "max", "md5", "microsecond", "mid", "min", "minute", "mod", "month",
+    "monthname", "now", "nth_value", "ntile", "nullif", "oct", "octet_length", "ord", "percent_rank", "period_add",
+    "period_diff", "pi", "position", "pow", "power", "quarter", "quote", "radians", "rand", "rank", "regexp_instr",
+    "regexp_like", "regexp_replace", "regexp_substr", "release_lock", "repeat", "replace", "reverse", "right", "round",
+    "row_count", "row_number", "rpad", "rtrim", "schema", "sec_to_time", "second", "session_user", "sha1", "sha2",
+    "sign", "sin", "sleep", "soundex", "space", "sqrt", "std", "stddev", "stddev_pop", "stddev_samp", "str_to_date",
+    "strcmp", "subdate", "substr", "substring", "substring_index", "subtime", "sum", "sysdate", "system_user", "tan",
+    "time", "time_format", "time_to_sec", "timediff", "timestamp", "timestampadd", "timestampdiff", "to_base64",
+    "to_days", "to_seconds", "trim", "truncate", "ucase", "unhex", "unix_timestamp", "upper", "user", "utc_date",
+    "utc_time", "utc_timestamp", "uuid", "uuid_short", "var_pop", "var_samp", "variance", "version", "week",
+    "weekday", "weekofyear", "year", "yearweek",
+];
 
 /// SQLite's built-in scalar, aggregate, date, math and JSON functions.
 const SQLITE_FUNCTIONS: &[&str] = &[
@@ -326,9 +403,9 @@ impl Completer {
                     continue;
                 }
                 let insert = if pass {
-                    quote_if_needed(&relation.name)
+                    self.quote(&relation.name)
                 } else {
-                    format!("{}.{}", quote_if_needed(&relation.schema), quote_if_needed(&relation.name))
+                    format!("{}.{}", self.quote(&relation.schema), self.quote(&relation.name))
                 };
                 list.push(&relation.name, insert, &relation.schema, relation_kind(relation.kind));
             }
@@ -341,7 +418,7 @@ impl Completer {
         for pass in [false, true] {
             for (schema, name) in self.functions.iter().filter(|(schema, _)| (schema == "pg_catalog") == pass) {
                 if self.on_path(schema) && seen.insert(name.as_str()) {
-                    list.push(name, quote_if_needed(name), schema, CompletionKind::Function);
+                    list.push(name, self.quote(name), schema, CompletionKind::Function);
                 }
             }
         }
@@ -757,10 +834,12 @@ impl Token {
         let text = &sql[self.start..self.end];
         match self.kind {
             Kind::QuotedName => {
-                let inner = text.strip_prefix('"').unwrap_or(text);
+                // "name", or MySQL's `name`.
+                let quote = text.chars().next().unwrap_or('"');
+                let inner = text.strip_prefix(quote).unwrap_or(text);
                 // An unclosed name (still being typed) has no closing quote.
-                let inner = if self.closed { inner.strip_suffix('"').unwrap_or(inner) } else { inner };
-                inner.replace("\"\"", "\"")
+                let inner = if self.closed { inner.strip_suffix(quote).unwrap_or(inner) } else { inner };
+                inner.replace(&format!("{quote}{quote}"), &quote.to_string())
             }
             _ => text.to_string(),
         }
@@ -791,9 +870,9 @@ fn tokenize(sql: &str) -> Vec<Token> {
                 Some(offset) => (Kind::Text, index + 2 + offset + 2, true, true),
                 None => (Kind::Text, bytes.len(), true, false),
             }
-        } else if byte == b'\'' || byte == b'"' {
+        } else if byte == b'\'' || byte == b'"' || byte == b'`' {
             let (end, closed) = quoted_end(bytes, index, byte);
-            (if byte == b'"' { Kind::QuotedName } else { Kind::Text }, end, byte == b'\'', closed)
+            (if byte == b'\'' { Kind::Text } else { Kind::QuotedName }, end, byte == b'\'', closed)
         } else if byte == b'$' {
             match dollar_tag(rest) {
                 Some(tag) => match rest[tag.len()..].find(tag) {
@@ -843,13 +922,23 @@ fn dollar_tag(text: &str) -> Option<&str> {
     (text.as_bytes().get(close) == Some(&b'$')).then(|| &text[..=close])
 }
 
-/// The name as SQL: bare when it is a plain lowercase identifier, else
-/// double-quoted.
-fn quote_if_needed(name: &str) -> String {
-    let plain = name.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_')
-        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '$')
-        && !RESERVED.contains(&name);
-    if plain { name.to_string() } else { crate::rows::quote_identifier(name) }
+impl Completer {
+    /// The name as SQL: bare when it is a plain identifier, else quoted.
+    /// PostgreSQL folds bare names to lowercase, so there only lowercase
+    /// names stay bare; MySQL keeps their case.
+    fn quote(&self, name: &str) -> String {
+        let lowercase_only = !self.backticks;
+        let plain = name.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_' || (!lowercase_only && c.is_ascii_uppercase()))
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '$' || (!lowercase_only && c.is_ascii_uppercase()))
+            && !RESERVED.contains(&name.to_ascii_lowercase().as_str());
+        match (plain, self.backticks) {
+            (true, _) => name.to_string(),
+            (false, true) => crate::mysql::backtick(name),
+            (false, false) => crate::rows::quote_identifier(name),
+        }
+    }
 }
 
 fn byte_offset(text: &str, utf16: usize) -> usize {
@@ -921,6 +1010,7 @@ mod tests {
             ],
             schemas: vec!["billing".into(), "public".into()],
             search_path: vec!["pg_catalog".into(), "public".into()],
+            backticks: false,
         }
     }
 

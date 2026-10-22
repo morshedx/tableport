@@ -413,3 +413,129 @@ async fn reads_and_changes_the_structure() {
     })
     .await;
 }
+
+/// One allowed MySQL connection, for the AI access attack test.
+struct MysqlHost {
+    settings: ConnectionSettings,
+}
+
+impl tableport_core::McpHost for MysqlHost {
+    fn connections(&self) -> Vec<tableport_core::McpConnection> {
+        vec![tableport_core::McpConnection {
+            id: "server".into(),
+            name: "Server".into(),
+            database: self.settings.database.clone(),
+            all_databases: false,
+            tag: None,
+        }]
+    }
+
+    fn settings(&self, _connection_id: String) -> Option<ConnectionSettings> {
+        Some(self.settings.clone())
+    }
+
+    fn record(&self, _entry: tableport_core::McpLogEntry) {}
+}
+
+/// The MySQL attack test: every way to write fails, and the rows are unchanged.
+#[tokio::test]
+async fn ai_tools_only_read() {
+    use serde_json::{json, Value};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    for (host, port) in servers() {
+        let database = format!("tableport_ai_{}_{port}", std::process::id());
+        let admin = DatabaseSession::connect(settings(&host, port, "")).await.unwrap();
+        admin.execute(format!("DROP DATABASE IF EXISTS \"{database}\"")).await.unwrap();
+        admin.execute(format!("CREATE DATABASE \"{database}\"")).await.unwrap();
+        let owner = DatabaseSession::connect(settings(&host, port, &database)).await.unwrap();
+        for statement in [
+            "CREATE TABLE notes (id INT PRIMARY KEY, body TEXT)",
+            "INSERT INTO notes VALUES (1, 'a'), (2, 'b'), (3, 'c')",
+            "CREATE FUNCTION wipe() RETURNS INT DETERMINISTIC MODIFIES SQL DATA BEGIN DELETE FROM notes; RETURN 1; END",
+        ] {
+            owner.execute(statement.into()).await.unwrap_or_else(|error| panic!("{statement}: {error}"));
+        }
+
+        let socket = std::env::temp_dir().join(format!("tableport-mcp-mysql-{}-{port}.sock", std::process::id()));
+        let host_settings = settings(&host, port, &database);
+        let server = tableport_core::start_mcp_server(socket.to_string_lossy().into(), "test".into(), Arc::new(MysqlHost { settings: host_settings }))
+            .unwrap();
+        let (reader, mut writer) = tokio::net::UnixStream::connect(&socket).await.unwrap().into_split();
+        let mut lines = BufReader::new(reader).lines();
+        let mut next_id = 0;
+        let mut call = |tool: &'static str, arguments: Value| {
+            next_id += 1;
+            let message = json!({ "jsonrpc": "2.0", "id": next_id, "method": "tools/call", "params": { "name": tool, "arguments": arguments } });
+            async move { message }
+        };
+        macro_rules! ask {
+            ($tool:expr, $arguments:expr) => {{
+                let message = call($tool, $arguments).await;
+                writer.write_all(format!("{message}\n").as_bytes()).await.unwrap();
+                let reply: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                let result = &reply["result"];
+                (result["content"][0]["text"].as_str().unwrap_or_default().to_string(), result["isError"].as_bool().unwrap_or(true))
+            }};
+        }
+
+        let (text, error) = ask!("run_read_query", json!({ "sql": "SELECT id, body FROM notes ORDER BY id" }));
+        assert!(!error, "{text}");
+        let body: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(body["rows"][0], json!({ "id": 1, "body": "a" }));
+        assert_eq!(body["row_count"], json!(3));
+
+        for sql in [
+            "DELETE FROM notes",
+            "UPDATE notes SET body = 'x'",
+            "SELECT 1; DELETE FROM notes",
+            "SELECT 1) AS x; DELETE FROM notes; SELECT * FROM (SELECT 1",
+            "WITH x AS (SELECT 1) DELETE FROM notes",
+            "SELECT wipe()",
+            "SELECT * FROM notes INTO OUTFILE '/tmp/tableport-ai'",
+            "SET SESSION TRANSACTION READ WRITE",
+            "CREATE TEMPORARY TABLE t (id INT)",
+        ] {
+            let (text, error) = ask!("run_read_query", json!({ "sql": sql }));
+            assert!(error, "not refused: {sql} → {text}");
+        }
+        for sql in ["DELETE FROM notes", "ANALYZE DELETE FROM notes"] {
+            let (text, error) = ask!("explain_query", json!({ "sql": sql }));
+            assert!(error, "not refused: EXPLAIN {sql} → {text}");
+        }
+        let (text, error) = ask!("explain_query", json!({ "sql": "SELECT * FROM notes WHERE id = 1" }));
+        assert!(!error && !text.is_empty(), "{text}");
+
+        // A lock taken with GET_LOCK doesn't outlive the call.
+        let (text, error) = ask!("run_read_query", json!({ "sql": "SELECT GET_LOCK('tableport_ai', 0) AS got" }));
+        assert!(!error && text.contains("\"got\": 1"), "{text}");
+        let free = owner.run_query("SELECT IS_FREE_LOCK('tableport_ai')".into(), 1).await.unwrap();
+        assert_eq!(free.result_sets[0].rows[0][0].as_deref(), Some("1"));
+
+        let (text, error) = ask!("describe_table", json!({ "schema": database, "table": "notes" }));
+        assert!(!error && text.contains("PRIMARY KEY"), "{text}");
+
+        server.stop();
+        let count = owner.run_query("SELECT count(*), group_concat(body ORDER BY id) FROM notes".into(), 1).await.unwrap();
+        assert_eq!(count.result_sets[0].rows[0], [Some("3".to_string()), Some("a,b,c".to_string())]);
+        admin.execute(format!("DROP DATABASE \"{database}\"")).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn autocompletes_with_backticks() {
+    use tableport_core::{CompletionKind, KeywordCase};
+    on_each_server("complete", |session, database| async move {
+        session.execute(format!("CREATE TABLE \"{database}\".\"Order Lines\" (\"Line Id\" INT, qty INT)")).await.unwrap();
+        let completer = session.completer().await.unwrap();
+        let at = |sql: &str| completer.complete(sql.into(), sql.encode_utf16().count() as u32, false, KeywordCase::Upper).items;
+        assert_eq!(at("select * from us")[0].label, "users");
+        let lines = at("select * from Ord");
+        let item = lines.iter().find(|item| item.label == "Order Lines").expect("the table with a space");
+        assert_eq!(item.insert_text, "`Order Lines`");
+        let sql = "select o. from `Order Lines` o";
+        let columns = completer.complete(sql.into(), 9, false, KeywordCase::Upper).items;
+        assert_eq!(columns.iter().map(|item| item.insert_text.as_str()).collect::<Vec<_>>(), ["`Line Id`", "qty"]);
+        assert!(at("select date_fo").iter().any(|item| item.label == "date_format" && item.kind == CompletionKind::Function));
+    })
+    .await;
+}
