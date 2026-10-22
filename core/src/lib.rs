@@ -9,6 +9,7 @@ mod changes;
 mod completion;
 mod error;
 mod export;
+mod mcp;
 mod query;
 mod rows;
 mod schema;
@@ -23,6 +24,7 @@ pub use changes::{changes_sql, insert_sql, CellDraft, NewRow, PendingChanges, Ro
 pub use completion::{rank_names, Completer, CompletionItem, CompletionKind, Completions, KeywordCase};
 pub use error::DatabaseError;
 pub use export::{rows_to_csv, rows_to_insert_sql, rows_to_json, ExportFormat, ExportScope};
+pub use mcp::{run_mcp_bridge, start_mcp_server, McpConnection, McpHost, McpLogEntry, McpServer};
 pub use query::{QueryResult, ResultSet};
 pub use rows::{grid_cell_limit, Column, ColumnKind, FilterOperator, FilterTarget, RowFilter, RowPage, RowSort, GRID_CELL_LIMIT};
 pub use schema::{

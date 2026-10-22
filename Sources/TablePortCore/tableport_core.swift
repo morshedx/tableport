@@ -460,7 +460,13 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 
 
 // Public interface members begin here.
-
+// Magic number for the Rust proxy to call using the same mechanism as every other method,
+// to free the callback once it's dropped by Rust.
+private let IDX_CALLBACK_FREE: Int32 = 0
+// Callback return codes
+private let UNIFFI_CALLBACK_SUCCESS: Int32 = 0
+private let UNIFFI_CALLBACK_ERROR: Int32 = 1
+private let UNIFFI_CALLBACK_UNEXPECTED_ERROR: Int32 = 2
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -490,6 +496,22 @@ fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
     }
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterInt32: FfiConverterPrimitive {
+    typealias FfiType = Int32
+    typealias SwiftType = Int32
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Int32 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Int32, into buf: inout [UInt8]) {
         writeInt(&buf, lower(value))
     }
 }
@@ -1739,6 +1761,405 @@ public func FfiConverterTypeLocalStore_lower(_ value: LocalStore) -> UInt64 {
 
 
 
+
+
+/**
+ * What the app provides: which connections are allowed, their settings
+ * (with the password from the Keychain), and where calls are logged.
+ * Called from the core's threads, so the app's side must be thread-safe.
+ */
+public protocol McpHost: AnyObject, Sendable {
+    
+    func connections()  -> [McpConnection]
+    
+    func settings(connectionId: String)  -> ConnectionSettings?
+    
+    func record(entry: McpLogEntry) 
+    
+}
+/**
+ * What the app provides: which connections are allowed, their settings
+ * (with the password from the Keychain), and where calls are logged.
+ * Called from the core's threads, so the app's side must be thread-safe.
+ */
+open class McpHostImpl: McpHost, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_tableport_core_fn_clone_mcphost(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_tableport_core_fn_free_mcphost(handle, $0) }
+    }
+
+    
+
+    
+open func connections() -> [McpConnection]  {
+    return try!  FfiConverterSequenceTypeMcpConnection.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_method_mcphost_connections(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+open func settings(connectionId: String) -> ConnectionSettings?  {
+    return try!  FfiConverterOptionTypeConnectionSettings.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_method_mcphost_settings(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(connectionId),uniffiCallStatus
+    )
+})
+}
+    
+open func record(entry: McpLogEntry)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_method_mcphost_record(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeMcpLogEntry_lower(entry),uniffiCallStatus
+    )
+}
+}
+    
+
+    
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceMcpHost {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceMcpHost = UniffiVTableCallbackInterfaceMcpHost(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeMcpHost.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface McpHost: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeMcpHost.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface McpHost: handle missing in uniffiClone")
+            }
+        },
+        connections: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> [McpConnection] in
+                guard let uniffiObj = try? FfiConverterTypeMcpHost.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.connections(
+                )
+            }
+
+            
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterSequenceTypeMcpConnection.lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        settings: { (
+            uniffiHandle: UInt64,
+            connectionId: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> ConnectionSettings? in
+                guard let uniffiObj = try? FfiConverterTypeMcpHost.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.settings(
+                     connectionId: try FfiConverterString.lift(connectionId)
+                )
+            }
+
+            
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterOptionTypeConnectionSettings.lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        record: { (
+            uniffiHandle: UInt64,
+            entry: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeMcpHost.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.record(
+                     entry: try FfiConverterTypeMcpLogEntry_lift(entry)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMcpHost> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceMcpHost>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitMcpHost() {
+    uniffi_tableport_core_fn_init_callback_vtable_mcphost(UniffiCallbackInterfaceMcpHost.vtablePtr)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMcpHost: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<McpHost>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = McpHost
+
+    public static func lift(_ handle: UInt64) throws -> McpHost {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return McpHostImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: McpHost) -> UInt64 {
+         if let rustImpl = value as? McpHostImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> McpHost {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: McpHost, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMcpHost_lift(_ handle: UInt64) throws -> McpHost {
+    return try FfiConverterTypeMcpHost.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMcpHost_lower(_ value: McpHost) -> UInt64 {
+    return FfiConverterTypeMcpHost.lower(value)
+}
+
+
+
+
+
+
+/**
+ * The running server; dropping or stopping it closes the socket.
+ */
+public protocol McpServerProtocol: AnyObject, Sendable {
+    
+    func stop() 
+    
+}
+/**
+ * The running server; dropping or stopping it closes the socket.
+ */
+open class McpServer: McpServerProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_tableport_core_fn_clone_mcpserver(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_tableport_core_fn_free_mcpserver(handle, $0) }
+    }
+
+    
+
+    
+open func stop()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_method_mcpserver_stop(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMcpServer: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = McpServer
+
+    public static func lift(_ handle: UInt64) throws -> McpServer {
+        return McpServer(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: McpServer) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> McpServer {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: McpServer, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMcpServer_lift(_ handle: UInt64) throws -> McpServer {
+    return try FfiConverterTypeMcpServer.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMcpServer_lower(_ value: McpServer) -> UInt64 {
+    return FfiConverterTypeMcpServer.lower(value)
+}
+
+
+
+
 public struct Column: Equatable, Hashable {
     public var name: String
     /**
@@ -2489,6 +2910,172 @@ public func FfiConverterTypeIndexDetail_lift(_ buf: RustBuffer) throws -> IndexD
 #endif
 public func FfiConverterTypeIndexDetail_lower(_ value: IndexDetail) -> RustBuffer {
     return FfiConverterTypeIndexDetail.lower(value)
+}
+
+
+/**
+ * A connection the user allowed AI tools to use.
+ */
+public struct McpConnection: Equatable, Hashable {
+    public var id: String
+    public var name: String
+    /**
+     * The connection's own database, used when a call names none.
+     */
+    public var database: String
+    /**
+     * Other databases on the same server may be read too, with the same login.
+     */
+    public var allDatabases: Bool
+    /**
+     * production, staging…, so the AI tool can tell them apart.
+     */
+    public var tag: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, name: String, 
+        /**
+         * The connection's own database, used when a call names none.
+         */database: String, 
+        /**
+         * Other databases on the same server may be read too, with the same login.
+         */allDatabases: Bool, 
+        /**
+         * production, staging…, so the AI tool can tell them apart.
+         */tag: String?) {
+        self.id = id
+        self.name = name
+        self.database = database
+        self.allDatabases = allDatabases
+        self.tag = tag
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension McpConnection: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMcpConnection: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> McpConnection {
+        return
+            try McpConnection(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                database: FfiConverterString.read(from: &buf), 
+                allDatabases: FfiConverterBool.read(from: &buf), 
+                tag: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: McpConnection, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.database, into: &buf)
+        FfiConverterBool.write(value.allDatabases, into: &buf)
+        FfiConverterOptionString.write(value.tag, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMcpConnection_lift(_ buf: RustBuffer) throws -> McpConnection {
+    return try FfiConverterTypeMcpConnection.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMcpConnection_lower(_ value: McpConnection) -> RustBuffer {
+    return FfiConverterTypeMcpConnection.lower(value)
+}
+
+
+/**
+ * One tool call, for the log the user sees in Settings › AI access.
+ */
+public struct McpLogEntry: Equatable, Hashable {
+    public var connection: String
+    public var tool: String
+    public var sql: String?
+    public var succeeded: Bool
+    /**
+     * A short result ("12 rows") or the error.
+     */
+    public var summary: String
+    public var elapsedMs: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(connection: String, tool: String, sql: String?, succeeded: Bool, 
+        /**
+         * A short result ("12 rows") or the error.
+         */summary: String, elapsedMs: UInt64) {
+        self.connection = connection
+        self.tool = tool
+        self.sql = sql
+        self.succeeded = succeeded
+        self.summary = summary
+        self.elapsedMs = elapsedMs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension McpLogEntry: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMcpLogEntry: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> McpLogEntry {
+        return
+            try McpLogEntry(
+                connection: FfiConverterString.read(from: &buf), 
+                tool: FfiConverterString.read(from: &buf), 
+                sql: FfiConverterOptionString.read(from: &buf), 
+                succeeded: FfiConverterBool.read(from: &buf), 
+                summary: FfiConverterString.read(from: &buf), 
+                elapsedMs: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: McpLogEntry, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.connection, into: &buf)
+        FfiConverterString.write(value.tool, into: &buf)
+        FfiConverterOptionString.write(value.sql, into: &buf)
+        FfiConverterBool.write(value.succeeded, into: &buf)
+        FfiConverterString.write(value.summary, into: &buf)
+        FfiConverterUInt64.write(value.elapsedMs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMcpLogEntry_lift(_ buf: RustBuffer) throws -> McpLogEntry {
+    return try FfiConverterTypeMcpLogEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMcpLogEntry_lower(_ value: McpLogEntry) -> RustBuffer {
+    return FfiConverterTypeMcpLogEntry.lower(value)
 }
 
 
@@ -5150,6 +5737,30 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeConnectionSettings: FfiConverterRustBuffer {
+    typealias SwiftType = ConnectionSettings?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeConnectionSettings.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeConnectionSettings.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeRowSort: FfiConverterRustBuffer {
     typealias SwiftType = RowSort?
 
@@ -5513,6 +6124,31 @@ fileprivate struct FfiConverterSequenceTypeIndexDetail: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeIndexDetail.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMcpConnection: FfiConverterRustBuffer {
+    typealias SwiftType = [McpConnection]
+
+    public static func write(_ value: [McpConnection], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMcpConnection.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [McpConnection] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [McpConnection]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMcpConnection.read(from: &buf))
         }
         return seq
     }
@@ -5977,6 +6613,32 @@ public func rowsToJson(columns: [String], rows: [[String?]]) -> String  {
 })
 }
 /**
+ * `tableport mcp`: passes stdin to the app's socket and the socket's
+ * replies to stdout until either side closes. Returns the exit code.
+ */
+public func runMcpBridge(socketPath: String) -> Int32  {
+    return try!  FfiConverterInt32.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_func_run_mcp_bridge(
+        FfiConverterString.lower(socketPath),uniffiCallStatus
+    )
+})
+}
+/**
+ * Starts the server on `socket_path`, replacing a socket left by an
+ * earlier run. Only the user can connect: the socket is mode 0600.
+ */
+public func startMcpServer(socketPath: String, version: String, host: McpHost)throws  -> McpServer  {
+    return try  FfiConverterTypeMcpServer_lift(try rustCallWithError(FfiConverterTypeDatabaseError_lift) {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_func_start_mcp_server(
+        FfiConverterString.lower(socketPath),
+        FfiConverterString.lower(version),
+        FfiConverterTypeMcpHost_lower(host),uniffiCallStatus
+    )
+})
+}
+/**
  * [`GRID_CELL_LIMIT`] for Swift, which UniFFI doesn't export constants to.
  */
 public func gridCellLimit() -> UInt32  {
@@ -6182,6 +6844,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tableport_core_checksum_func_rows_to_json() != 39317) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_tableport_core_checksum_func_run_mcp_bridge() != 60153) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_func_start_mcp_server() != 57500) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_tableport_core_checksum_func_grid_cell_limit() != 9110) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6222,6 +6890,18 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_method_completer_complete() != 57341) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_method_mcphost_connections() != 54503) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_method_mcphost_settings() != 51671) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_method_mcphost_record() != 25787) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_method_mcpserver_stop() != 63578) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_method_databasesession_commit() != 47523) {
@@ -6336,6 +7016,7 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
 
+    uniffiCallbackInitMcpHost()
     return InitializationResult.ok
 }()
 

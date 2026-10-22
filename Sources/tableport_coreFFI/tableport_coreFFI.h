@@ -243,6 +243,38 @@ typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureRes
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_MCP_HOST_METHOD0
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_MCP_HOST_METHOD0
+typedef void (*UniffiCallbackInterfaceMcpHostMethod0)(uint64_t, RustBuffer* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_MCP_HOST_METHOD1
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_MCP_HOST_METHOD1
+typedef void (*UniffiCallbackInterfaceMcpHostMethod1)(uint64_t, RustBuffer, RustBuffer* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_MCP_HOST_METHOD2
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_MCP_HOST_METHOD2
+typedef void (*UniffiCallbackInterfaceMcpHostMethod2)(uint64_t, RustBuffer, void* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_MCP_HOST
+#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_MCP_HOST
+typedef struct UniffiVTableCallbackInterfaceMcpHost {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
+    UniffiCallbackInterfaceMcpHostMethod0 _Nonnull connections;
+    UniffiCallbackInterfaceMcpHostMethod1 _Nonnull settings;
+    UniffiCallbackInterfaceMcpHostMethod2 _Nonnull record;
+} UniffiVTableCallbackInterfaceMcpHost;
+
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_CLONE_COMPLETER
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_CLONE_COMPLETER
 uint64_t uniffi_tableport_core_fn_clone_completer(uint64_t handle, RustCallStatus *_Nonnull out_status
@@ -256,6 +288,51 @@ void uniffi_tableport_core_fn_free_completer(uint64_t handle, RustCallStatus *_N
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_COMPLETER_COMPLETE
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_COMPLETER_COMPLETE
 RustBuffer uniffi_tableport_core_fn_method_completer_complete(uint64_t ptr, RustBuffer sql, uint32_t cursor, int8_t explicit, RustBuffer keyword_case, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_CLONE_MCPHOST
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_CLONE_MCPHOST
+uint64_t uniffi_tableport_core_fn_clone_mcphost(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FREE_MCPHOST
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FREE_MCPHOST
+void uniffi_tableport_core_fn_free_mcphost(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_INIT_CALLBACK_VTABLE_MCPHOST
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_INIT_CALLBACK_VTABLE_MCPHOST
+void uniffi_tableport_core_fn_init_callback_vtable_mcphost(const UniffiVTableCallbackInterfaceMcpHost* _Nonnull vtable
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_MCPHOST_CONNECTIONS
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_MCPHOST_CONNECTIONS
+RustBuffer uniffi_tableport_core_fn_method_mcphost_connections(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_MCPHOST_SETTINGS
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_MCPHOST_SETTINGS
+RustBuffer uniffi_tableport_core_fn_method_mcphost_settings(uint64_t ptr, RustBuffer connection_id, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_MCPHOST_RECORD
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_MCPHOST_RECORD
+void uniffi_tableport_core_fn_method_mcphost_record(uint64_t ptr, RustBuffer entry, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_CLONE_MCPSERVER
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_CLONE_MCPSERVER
+uint64_t uniffi_tableport_core_fn_clone_mcpserver(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FREE_MCPSERVER
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FREE_MCPSERVER
+void uniffi_tableport_core_fn_free_mcpserver(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_MCPSERVER_STOP
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_MCPSERVER_STOP
+void uniffi_tableport_core_fn_method_mcpserver_stop(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_CLONE_DATABASESESSION
@@ -491,6 +568,16 @@ RustBuffer uniffi_tableport_core_fn_func_rows_to_insert_sql(RustBuffer relation,
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_ROWS_TO_JSON
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_ROWS_TO_JSON
 RustBuffer uniffi_tableport_core_fn_func_rows_to_json(RustBuffer columns, RustBuffer rows, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_RUN_MCP_BRIDGE
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_RUN_MCP_BRIDGE
+int32_t uniffi_tableport_core_fn_func_run_mcp_bridge(RustBuffer socket_path, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_START_MCP_SERVER
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_START_MCP_SERVER
+uint64_t uniffi_tableport_core_fn_func_start_mcp_server(RustBuffer socket_path, RustBuffer version, uint64_t host, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_GRID_CELL_LIMIT
@@ -855,6 +942,18 @@ uint16_t uniffi_tableport_core_checksum_func_rows_to_json(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_RUN_MCP_BRIDGE
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_RUN_MCP_BRIDGE
+uint16_t uniffi_tableport_core_checksum_func_run_mcp_bridge(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_START_MCP_SERVER
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_START_MCP_SERVER
+uint16_t uniffi_tableport_core_checksum_func_start_mcp_server(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_GRID_CELL_LIMIT
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_GRID_CELL_LIMIT
 uint16_t uniffi_tableport_core_checksum_func_grid_cell_limit(void
@@ -936,6 +1035,30 @@ uint16_t uniffi_tableport_core_checksum_func_parse_connection_url(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_COMPLETER_COMPLETE
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_COMPLETER_COMPLETE
 uint16_t uniffi_tableport_core_checksum_method_completer_complete(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_MCPHOST_CONNECTIONS
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_MCPHOST_CONNECTIONS
+uint16_t uniffi_tableport_core_checksum_method_mcphost_connections(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_MCPHOST_SETTINGS
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_MCPHOST_SETTINGS
+uint16_t uniffi_tableport_core_checksum_method_mcphost_settings(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_MCPHOST_RECORD
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_MCPHOST_RECORD
+uint16_t uniffi_tableport_core_checksum_method_mcphost_record(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_MCPSERVER_STOP
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_MCPSERVER_STOP
+uint16_t uniffi_tableport_core_checksum_method_mcpserver_stop(void
     
 );
 #endif
