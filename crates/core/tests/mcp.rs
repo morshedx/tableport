@@ -126,3 +126,76 @@ async fn read_only_tools_over_the_socket() {
     )
     .await;
 }
+
+/// One allowed SQLite file.
+struct SqliteHost {
+    path: String,
+}
+
+impl McpHost for SqliteHost {
+    fn connections(&self) -> Vec<McpConnection> {
+        vec![McpConnection { id: "file".into(), name: "File".into(), database: self.path.clone(), all_databases: false, tag: None }]
+    }
+
+    fn settings(&self, _connection_id: String) -> Option<ConnectionSettings> {
+        Some(ConnectionSettings {
+            host: String::new(),
+            port: 0,
+            database: self.path.clone(),
+            user: String::new(),
+            password: None,
+            tls: TlsMode::Disable,
+            ssh: None,
+            read_only: false,
+            engine: tableport_core::Engine::Sqlite,
+        })
+    }
+
+    fn record(&self, _entry: McpLogEntry) {}
+}
+
+/// The SQLite attack test: every way to write fails, and the file is unchanged.
+#[tokio::test]
+async fn sqlite_files_stay_read_only_for_ai_tools() {
+    let path = std::env::temp_dir().join(format!("tableport-mcp-{}.sqlite", std::process::id()));
+    std::fs::remove_file(&path).ok();
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);
+             INSERT INTO notes (body) VALUES ('a'), ('b'), ('c');
+             CREATE TRIGGER sneaky AFTER UPDATE ON notes BEGIN DELETE FROM notes; END;",
+        )
+        .unwrap();
+    let socket = std::env::temp_dir().join(format!("tableport-mcp-sqlite-{}.sock", std::process::id()));
+    let host = Arc::new(SqliteHost { path: path.to_string_lossy().into() });
+    let server = start_mcp_server(socket.to_string_lossy().into(), "test".into(), host).unwrap();
+    let (reader, writer) = UnixStream::connect(&socket).await.unwrap().into_split();
+    let mut client = Client { lines: BufReader::new(reader).lines(), writer, next_id: 0 };
+
+    let (text, error) = client.call("run_read_query", json!({ "sql": "SELECT id, body FROM notes ORDER BY id" })).await;
+    assert!(!error, "{text}");
+    let body: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(body["rows"][0], json!({ "id": 1, "body": "a" }));
+
+    for sql in [
+        "DELETE FROM notes",
+        "SELECT 1; DELETE FROM notes",
+        "WITH gone AS (DELETE FROM notes RETURNING *) SELECT * FROM gone",
+        "PRAGMA query_only = OFF",
+        "ATTACH DATABASE '/tmp/x.sqlite' AS x",
+        "UPDATE notes SET body = 'x'",
+    ] {
+        let (text, error) = client.call("run_read_query", json!({ "sql": sql })).await;
+        assert!(error, "not refused: {sql} → {text}");
+    }
+    let (text, error) = client.call("explain_query", json!({ "sql": "SELECT * FROM notes WHERE id = 1" })).await;
+    assert!(!error && text.to_uppercase().contains("SEARCH"), "{text}");
+    let (text, error) = client.call("describe_table", json!({ "schema": "main", "table": "notes" })).await;
+    assert!(!error && text.contains("PRIMARY KEY (id)"), "{text}");
+
+    server.stop();
+    let count: i64 = rusqlite::Connection::open(&path).unwrap().query_row("SELECT count(*) FROM notes", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 3);
+    std::fs::remove_file(&path).ok();
+}

@@ -73,6 +73,9 @@ impl DatabaseSession {
     /// Reads the catalog for autocomplete: every relation with its columns,
     /// the functions, the schemas and the search path.
     pub async fn completer(&self) -> Result<Arc<Completer>, DatabaseError> {
+        if self.engine() == crate::Engine::Sqlite {
+            return self.sqlite_completer().await;
+        }
         let relation_rows = self
             .text_rows(
                 r"SELECT n.nspname, c.relname, c.relkind,
@@ -248,6 +251,51 @@ impl Completer {
         Completions { replace_start: utf16_offset(&sql, replace_start), items: list.finish() }
     }
 }
+
+impl DatabaseSession {
+    /// SQLite's catalog: the tables and views of every attached database
+    /// with their columns, and SQLite's built-in functions. `main` and
+    /// `temp` are searched for unqualified names, as SQLite does.
+    async fn sqlite_completer(&self) -> Result<Arc<Completer>, DatabaseError> {
+        let schemas = self.schemas().await?;
+        let mut relations = Vec::new();
+        for schema in &schemas {
+            for relation in &schema.relations {
+                let columns = self.columns(relation.clone()).await?.into_iter().map(|column| column.name).collect();
+                relations.push(CatalogRelation {
+                    schema: relation.schema.clone(),
+                    name: relation.name.clone(),
+                    kind: relation.kind,
+                    columns,
+                });
+            }
+        }
+        relations.sort_by(|a, b| a.name.cmp(&b.name));
+        let functions = SQLITE_FUNCTIONS.iter().map(|name| ("main".to_string(), name.to_string())).collect();
+        Ok(Arc::new(Completer {
+            relations,
+            functions,
+            schemas: schemas.into_iter().map(|schema| schema.name).collect(),
+            search_path: vec!["main".into(), "temp".into()],
+        }))
+    }
+}
+
+/// SQLite's built-in scalar, aggregate, date, math and JSON functions.
+const SQLITE_FUNCTIONS: &[&str] = &[
+    "abs", "avg", "changes", "char", "coalesce", "concat", "concat_ws", "count", "date", "datetime", "format",
+    "glob", "group_concat", "hex", "ifnull", "iif", "instr", "json", "json_array", "json_array_length",
+    "json_each", "json_extract", "json_group_array", "json_group_object", "json_insert", "json_object",
+    "json_patch", "json_remove", "json_replace", "json_set", "json_tree", "json_type", "json_valid",
+    "julianday", "last_insert_rowid", "length", "like", "likelihood", "lower", "ltrim", "max", "min", "nullif",
+    "octet_length", "printf", "quote", "random", "randomblob", "replace", "round", "rtrim", "sign", "soundex",
+    "sqlite_version", "strftime", "string_agg", "substr", "substring", "sum", "time", "timediff", "total",
+    "total_changes", "trim", "typeof", "unhex", "unicode", "unixepoch", "upper", "zeroblob",
+    "acos", "asin", "atan", "atan2", "ceil", "ceiling", "cos", "degrees", "exp", "floor", "ln", "log",
+    "log10", "log2", "mod", "pi", "pow", "power", "radians", "sin", "sqrt", "tan", "trunc",
+    "row_number", "rank", "dense_rank", "percent_rank", "cume_dist", "ntile", "lag", "lead",
+    "first_value", "last_value", "nth_value",
+];
 
 impl Completer {
     /// A relation by name, from the search path first; `schema` qualifies it.

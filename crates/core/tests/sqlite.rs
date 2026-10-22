@@ -287,3 +287,17 @@ async fn reads_and_changes_the_structure() {
     let rows = session.run_query("SELECT id FROM posts".into(), 1).await.unwrap();
     assert_eq!(rows.result_sets[0].rows[0][0].as_deref(), Some("1"), "INTEGER PRIMARY KEY numbers rows itself");
 }
+
+#[tokio::test]
+async fn autocompletes_tables_columns_and_functions() {
+    use tableport_core::{CompletionKind, KeywordCase};
+    let file = TempDatabase::new("complete", SHOP);
+    let session = DatabaseSession::connect(file.settings(false)).await.unwrap();
+    let completer = session.completer().await.unwrap();
+    let at = |sql: &str| completer.complete(sql.into(), sql.encode_utf16().count() as u32, false, KeywordCase::Upper).items;
+    assert_eq!(at("select * from us")[0].label, "users");
+    let sql = "select u. from users u";
+    let items = completer.complete(sql.into(), 9, false, KeywordCase::Upper).items;
+    assert_eq!(items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), ["id", "name", "score", "joined", "avatar", "team_id"]);
+    assert!(at("select json_ex").iter().any(|item| item.label == "json_extract" && item.kind == CompletionKind::Function));
+}

@@ -253,6 +253,26 @@ impl SqliteLink {
         .await
     }
 
+    /// One statement's rows as JSON objects, with the stored types, for AI
+    /// access.
+    pub(crate) async fn json_rows(&self, sql: String) -> Result<Vec<serde_json::Value>, DatabaseError> {
+        self.with(move |connection| {
+            let mut statement = connection.prepare(&sql).map_err(|error| sqlite_error(&error))?;
+            let names: Vec<String> = statement.column_names().into_iter().map(str::to_string).collect();
+            let mut rows = statement.query([]).map_err(|error| sqlite_error(&error))?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().map_err(|error| sqlite_error(&error))? {
+                let mut object = serde_json::Map::new();
+                for (index, name) in names.iter().enumerate() {
+                    object.insert(name.clone(), json(row.get_ref(index).map_err(|error| sqlite_error(&error))?));
+                }
+                out.push(serde_json::Value::Object(object));
+            }
+            Ok(out)
+        })
+        .await
+    }
+
     /// Runs statements separated by `;`, discarding rows.
     pub(crate) async fn execute(&self, sql: String) -> Result<(), DatabaseError> {
         self.with(move |connection| connection.execute_batch(&sql).map_err(|error| sqlite_error(&error))).await

@@ -451,15 +451,22 @@ async fn read_query(session: &DatabaseSession, sql: &str, max_rows: u64) -> Resu
     // A subquery of a SELECT: a second statement is a syntax error, and
     // Postgres refuses data-changing WITH clauses there. The line breaks keep
     // a trailing -- comment from swallowing the closing parenthesis.
-    let wrapped = format!(
-        "SELECT coalesce(json_agg(row_to_json(ai_rows)), '[]'::json)::text \
-         FROM (SELECT * FROM (\n{}\n) AS ai_query LIMIT {}) AS ai_rows",
-        statement(sql),
-        max_rows + 1
-    );
-    let client = session.client()?;
-    let text: String = read_only(session, async { client.query_one(&wrapped, &[]).await.map(|row| row.get(0)) }).await?;
-    let mut rows: Vec<Value> = serde_json::from_str(&text).map_err(|error| DatabaseError::new(format!("Unreadable result: {error}")))?;
+    let mut rows: Vec<Value> = if let Some(link) = session.sqlite() {
+        // The AI session opened the file read-only, with query_only on: the
+        // wrapping only keeps it to one statement and a row limit.
+        let wrapped = format!("SELECT * FROM (\n{}\n) LIMIT {}", statement(sql), max_rows + 1);
+        link.json_rows(wrapped).await?
+    } else {
+        let wrapped = format!(
+            "SELECT coalesce(json_agg(row_to_json(ai_rows)), '[]'::json)::text \
+             FROM (SELECT * FROM (\n{}\n) AS ai_query LIMIT {}) AS ai_rows",
+            statement(sql),
+            max_rows + 1
+        );
+        let client = session.client()?;
+        let text: String = read_only(session, async { client.query_one(&wrapped, &[]).await.map(|row| row.get(0)) }).await?;
+        serde_json::from_str(&text).map_err(|error| DatabaseError::new(format!("Unreadable result: {error}")))?
+    };
     let truncated = rows.len() as u64 > max_rows;
     rows.truncate(max_rows as usize);
     let summary = format!("{}{} rows", rows.len(), if truncated { "+" } else { "" });
@@ -473,6 +480,13 @@ async fn read_query(session: &DatabaseSession, sql: &str, max_rows: u64) -> Resu
 }
 
 async fn explain_query(session: &DatabaseSession, sql: &str) -> Result<(String, String), DatabaseError> {
+    if session.sqlite().is_some() {
+        let rows = session.text_rows(format!("EXPLAIN QUERY PLAN {}", statement(sql))).await?;
+        // Columns: id, parent, (unused), detail.
+        let plan: Vec<String> = rows.into_iter().filter_map(|row| row.into_iter().nth(3).flatten()).collect();
+        let summary = format!("{} plan lines", plan.len());
+        return Ok((plan.join("\n"), summary));
+    }
     let explain = format!("EXPLAIN {}", statement(sql));
     let client = session.client()?;
     let rows = read_only(session, async { client.query(&explain, &[]).await }).await?;
