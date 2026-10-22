@@ -284,7 +284,7 @@ private struct ConnectionRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            PostgresLogo(size: 26)
+            EngineLogo(engine: connection.engine, size: 26)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
                     Text(connection.name)
@@ -309,7 +309,9 @@ private struct ConnectionRow: View {
     private var subtitle: some View {
         switch state {
         case .connected(let version):
-            Text("Connected · PostgreSQL \(version)").foregroundStyle(tint(Theme.successInk))
+            // SQLite's version already says "SQLite 3.…".
+            Text(connection.engine == .postgres ? "Connected · PostgreSQL \(version)" : "Connected · \(version)")
+                .foregroundStyle(tint(Theme.successInk))
         case .failed(let message):
             Text(message).foregroundStyle(tint(Theme.danger)).help(message)
         case .connecting, nil:

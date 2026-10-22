@@ -42,15 +42,23 @@ struct SavedConnection: Codable, Identifiable, Hashable {
     var aiAccess = false
     /// With AI access: every database on the same server, with the same login.
     var aiAllDatabases = false
+    /// PostgreSQL, or a SQLite file whose path is `database`.
+    var engine: Engine = .postgres
 
-    /// "host : database", the second line of a row.
+    /// "host : database", or a file's path, the second line of a row.
     var subtitle: String {
-        ssh.map { "\(host) : \(database) via \($0.host)" } ?? "\(host) : \(database)"
+        if engine == .sqlite { return (database as NSString).abbreviatingWithTildeInPath }
+        return ssh.map { "\(host) : \(database) via \($0.host)" } ?? "\(host) : \(database)"
     }
 
     /// The settings for the core, with the secrets read from the Keychain.
     func settings() throws -> ConnectionSettings {
-        ConnectionSettings(
+        if engine == .sqlite {
+            // A file: no server, login, TLS or tunnel.
+            return ConnectionSettings(host: "", port: 0, database: database, user: "", password: nil, tls: .disable,
+                                      ssh: nil, readOnly: readOnly, engine: .sqlite)
+        }
+        return ConnectionSettings(
             host: host,
             port: UInt16(clamping: port),
             database: database,
@@ -71,6 +79,33 @@ struct SavedConnection: Codable, Identifiable, Hashable {
             readOnly: readOnly,
             engine: .postgres
         )
+    }
+}
+
+// Stored in connections.json by name; files from before engines load as PostgreSQL.
+extension Engine: Codable {
+    private var storedName: String {
+        switch self {
+        case .postgres: "postgres"
+        case .sqlite: "sqlite"
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let name = try decoder.singleValueContainer().decode(String.self)
+        self = name == "sqlite" ? .sqlite : .postgres
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(storedName)
+    }
+
+    var label: String {
+        switch self {
+        case .postgres: "PostgreSQL"
+        case .sqlite: "SQLite"
+        }
     }
 }
 
@@ -103,6 +138,7 @@ extension SavedConnection {
         readOnly = try container.decodeIfPresent(Bool.self, forKey: .readOnly) ?? false
         aiAccess = try container.decodeIfPresent(Bool.self, forKey: .aiAccess) ?? false
         aiAllDatabases = try container.decodeIfPresent(Bool.self, forKey: .aiAllDatabases) ?? false
+        engine = try container.decodeIfPresent(Engine.self, forKey: .engine) ?? .postgres
     }
 }
 

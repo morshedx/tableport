@@ -140,9 +140,10 @@ final class WorkspaceModel: ObservableObject {
 
     var relationCount: Int { schemas.reduce(0) { $0 + $1.relations.count } }
 
-    /// "user@host:port/database" for the status bar.
+    /// "user@host:port/database", or the file's path, for the status bar.
     var endpointText: String {
         let settings = session.settings()
+        if settings.engine == .sqlite { return (settings.database as NSString).abbreviatingWithTildeInPath }
         let endpoint = "\(settings.user)@\(settings.host):\(settings.port)/\(settings.database)"
         return settings.ssh.map { "\(endpoint) via SSH \($0.user)@\($0.host):\($0.port)" } ?? endpoint
     }
@@ -639,7 +640,7 @@ private struct HeaderBar: View {
             // Room for the traffic lights, which sit over the content.
             Spacer().frame(width: 70)
             HeaderChip {
-                PostgresLogo(size: headerIconSize)
+                EngineLogo(engine: model.connection.engine, size: headerIconSize)
             } label: {
                 Text(model.connection.name)
                 if let tag = model.connection.tag {
@@ -655,6 +656,15 @@ private struct HeaderBar: View {
             Text("/")
                 .font(.system(size: 13))
                 .foregroundStyle(Theme.inkSecondary.opacity(0.5))
+            if model.connection.engine == .sqlite {
+                // One file: no other databases to switch to.
+                HeaderChip {
+                    headerLucide("database")
+                } label: {
+                    Text((model.connection.database as NSString).lastPathComponent)
+                }
+                .help(model.connection.database)
+            } else {
             Menu {
                 ForEach(model.databases, id: \.self) { name in
                     Button {
@@ -683,6 +693,7 @@ private struct HeaderBar: View {
             .focusEffectDisabled()
             .fixedSize()
             .help("Database")
+            }
             if model.connection.readOnly {
                 HeaderChip {
                     headerSymbol("lock.fill")
@@ -1057,14 +1068,17 @@ private struct StatusBar: View {
     var body: some View {
         HStack(spacing: 6) {
             Circle().fill(Theme.success).frame(width: 7, height: 7)
-            Text("Connected · PostgreSQL \(model.session.serverVersion())")
+            Text(model.connection.engine == .postgres
+                 ? "Connected · PostgreSQL \(model.session.serverVersion())"
+                 : "Connected · \(model.session.serverVersion())")
             Text("·")
             Text(model.endpointText)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
             if case .loaded = model.load {
-                Text("\(model.relationCount) relations in \(model.schemas.count) schemas")
+                let relations = model.relationCount == 1 ? "1 relation" : "\(model.relationCount) relations"
+                Text(model.schemas.count == 1 ? relations : "\(relations) in \(model.schemas.count) schemas")
             }
         }
         .font(Theme.meta)

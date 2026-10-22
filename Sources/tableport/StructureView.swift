@@ -94,6 +94,8 @@ struct StructureView: View {
                     .width(70)
                 TableColumn("default") { cell($0.defaultValue) }
                 TableColumn("comment") { cell($0.comment) }
+                    // SQLite has no column comments.
+                    .defaultVisibility(model.session.engine() == .postgres ? .visible : .hidden)
             }
             .contextMenu(forSelectionType: ColumnDetail.ID.self) { names in
                 if let column = columns.first(where: { names.contains($0.name) }) {
@@ -371,7 +373,9 @@ private struct ColumnSheet: View {
                 TextField("Default", text: $defaultValue, prompt: Text(isGenerated ? "" : "none, or an expression such as now()"))
                     .disabled(isGenerated)
                     .help(isGenerated ? "Identity and generated columns are changed in SQL" : "")
-                TextField("Comment", text: $comment, prompt: Text("none"))
+                if model.session.engine() == .postgres {
+                    TextField("Comment", text: $comment, prompt: Text("none"))
+                }
             }
             .font(AppFont.monoFont(size: 12))
             ChangeFooter(model: model, change: change, note: note, error: $error)

@@ -21,6 +21,8 @@ struct ConnectionForm: View {
     @State private var readOnly = false
     @State private var aiAccess = false
     @State private var aiAllDatabases = false
+    /// Chosen in the header for a new connection; an edit keeps its own.
+    @State private var engine: Engine = .postgres
     @State private var showsPassword = false
     @State private var tab: FormTab = .connection
 
@@ -52,11 +54,19 @@ struct ConnectionForm: View {
         case password = "Password"
     }
 
-    init(target: FormTarget, store: ConnectionStore, onClose: @escaping () -> Void = {}) {
+    init(target: FormTarget, store: ConnectionStore, engine: Engine = .postgres, onClose: @escaping () -> Void = {}) {
         self.target = target
         self.store = store
         self.onClose = onClose
+        _engine = State(initialValue: engine)
+        if engine == .sqlite {
+            // A file has no server defaults.
+            _host = State(initialValue: "")
+            _database = State(initialValue: "")
+            _user = State(initialValue: "")
+        }
         guard case .edit(let connection) = target else { return }
+        _engine = State(initialValue: connection.engine)
         _name = State(initialValue: connection.name)
         _host = State(initialValue: connection.host)
         _port = State(initialValue: String(connection.port))
@@ -90,7 +100,8 @@ struct ConnectionForm: View {
     }
 
     private var isServerComplete: Bool {
-        !trimmed(host).isEmpty && !trimmed(database).isEmpty && !trimmed(user).isEmpty && number(port) != nil
+        if engine == .sqlite { return !trimmed(database).isEmpty }
+        return !trimmed(host).isEmpty && !trimmed(database).isEmpty && !trimmed(user).isEmpty && number(port) != nil
     }
 
     private var isSSHComplete: Bool {
@@ -117,7 +128,8 @@ struct ConnectionForm: View {
                 .padding(.top, 20)
                 .padding(.bottom, 14)
             VStack(alignment: .leading, spacing: 14) {
-                urlBar
+                // URLs are for servers; a file is chosen on the Connection tab.
+                if engine == .postgres { urlBar }
                 tabBar
                 Group {
                     switch tab {
@@ -148,7 +160,7 @@ struct ConnectionForm: View {
     /// that still needs a field.
     private var tabBar: some View {
         HStack(spacing: 2) {
-            ForEach(FormTab.allCases, id: \.self) { option in
+            ForEach(tabs, id: \.self) { option in
                 Button {
                     tab = option
                 } label: {
@@ -178,6 +190,11 @@ struct ConnectionForm: View {
         .background(Theme.hairline, in: RoundedRectangle(cornerRadius: 8))
     }
 
+    /// A file needs no SSH tunnel.
+    private var tabs: [FormTab] {
+        engine == .sqlite ? [.connection, .access] : FormTab.allCases
+    }
+
     private func dot(for tab: FormTab) -> Color? {
         switch tab {
         case .connection:
@@ -190,7 +207,36 @@ struct ConnectionForm: View {
         }
     }
 
+    @ViewBuilder
     private var connectionTab: some View {
+        if engine == .sqlite { sqliteTab } else { serverTab }
+    }
+
+    /// A SQLite file: the connection's name and tag, and the file.
+    private var sqliteTab: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            FormCard("Connection") {
+                FormRow("Name") {
+                    TextField("Name", text: $name, prompt: Text("My database"))
+                }
+                FormRow("Tag") {
+                    tagChips
+                }
+                SwitchRow("Read-only", hint: "Browse and query, never change data. SQLite opens the file read-only.",
+                          isOn: $readOnly)
+            }
+            FormCard("Database file") {
+                FormRow("File") {
+                    HStack(spacing: 8) {
+                        TextField("File", text: $database, prompt: Text("~/data/app.sqlite"))
+                        Button("Choose…", action: chooseDatabaseFile)
+                    }
+                }
+            }
+        }
+    }
+
+    private var serverTab: some View {
         VStack(alignment: .leading, spacing: 14) {
             FormCard("Connection") {
                 FormRow("Name") {
@@ -256,7 +302,7 @@ struct ConnectionForm: View {
             FormCard("AI tools") {
                 SwitchRow("Allow AI access", hint: "Claude, Cursor and other AI tools can read it, never change it.",
                           isOn: $aiAccess)
-                if aiAccess {
+                if aiAccess && engine == .postgres {
                     SwitchRow("Every database on this server",
                               hint: "With the same login, still read-only. For many databases on one server.",
                               isOn: $aiAllDatabases, indent: true)
@@ -269,11 +315,7 @@ struct ConnectionForm: View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10).fill(Color(red: 0.2, green: 0.4, blue: 0.62).opacity(0.12))
-                if let logo = Bundle.resources?.image(forResource: "postgresql") {
-                    Image(nsImage: logo).resizable().scaledToFit().padding(7)
-                } else {
-                    Image(systemName: "cylinder.split.1x2").font(.system(size: 18))
-                }
+                EngineLogo(engine: engine, size: 26)
             }
             .frame(width: 40, height: 40)
             VStack(alignment: .leading, spacing: 2) {
@@ -289,11 +331,42 @@ struct ConnectionForm: View {
             if let tag {
                 TagChip(tag: tag, selected: true)
             }
+            if isNew {
+                Picker("Database", selection: $engine) {
+                    ForEach([Engine.postgres, .sqlite], id: \.self) { engine in
+                        Text(engine.label).tag(engine)
+                    }
+                }
+                .labelsHidden()
+                .fixedSize()
+                .help("Database")
+            }
+        }
+        .onChange(of: engine) { _, engine in switchEngine(to: engine) }
+    }
+
+    /// Swaps the server defaults for an empty file, and back, keeping what the user typed.
+    private func switchEngine(to engine: Engine) {
+        testTask?.cancel()
+        testState = .idle
+        if engine == .sqlite {
+            if host == "localhost" { host = "" }
+            if user == "postgres" { user = "" }
+            if database == "postgres" { database = "" }
+            if tab == .ssh { tab = .connection }
+        } else {
+            if trimmed(host).isEmpty { host = "localhost" }
+            if trimmed(user).isEmpty { user = "postgres" }
+            if trimmed(database).isEmpty || database.contains("/") { database = "postgres" }
         }
     }
 
-    /// "PostgreSQL · user@host:port/database", as the form stands.
+    /// "PostgreSQL · user@host:port/database", or "SQLite · file", as the form stands.
     private var summary: String {
+        if engine == .sqlite {
+            let file = trimmed(database).isEmpty ? "choose a file" : (trimmed(database) as NSString).lastPathComponent
+            return "SQLite · \(file)"
+        }
         let host = trimmed(self.host).isEmpty ? "host" : trimmed(self.host)
         let database = trimmed(self.database).isEmpty ? "database" : trimmed(self.database)
         return "PostgreSQL · \(trimmed(user))@\(host):\(port)/\(database)"
@@ -443,8 +516,8 @@ struct ConnectionForm: View {
             }
             .font(Theme.caption)
         case .succeeded(let version):
-            // Short, to fit beside Test: "Connected · 17.7"; the full version on hover.
-            Label("Connected · \(version.split(separator: " ").first.map(String.init) ?? version)",
+            // Short, to fit beside Test: "Connected · 17.7" or "Opened · SQLite 3.50"; the full version on hover.
+            Label(engine == .sqlite ? "Opened · \(version)" : "Connected · \(version.split(separator: " ").first.map(String.init) ?? version)",
                   systemImage: "checkmark.circle.fill")
                 .help("PostgreSQL \(version)")
                 .font(Theme.caption)
@@ -490,6 +563,16 @@ struct ConnectionForm: View {
         }
     }
 
+    private func chooseDatabaseFile() {
+        let panel = NSOpenPanel()
+        panel.message = "Choose a SQLite database file"
+        panel.canChooseDirectories = false
+        if panel.runModal() == .OK, let url = panel.url {
+            database = url.path
+            if trimmed(name).isEmpty { name = url.deletingPathExtension().lastPathComponent }
+        }
+    }
+
     private func chooseKeyFile() {
         let panel = NSOpenPanel()
         panel.message = "Choose an SSH private key"
@@ -502,6 +585,10 @@ struct ConnectionForm: View {
 
     /// The form's values as the core's settings, secrets included.
     private func settings() -> ConnectionSettings? {
+        if engine == .sqlite {
+            return ConnectionSettings(host: "", port: 0, database: (trimmed(database) as NSString).expandingTildeInPath, user: "",
+                                      password: nil, tls: .disable, ssh: nil, readOnly: readOnly, engine: .sqlite)
+        }
         guard let port = number(port) else { return nil }
         var ssh: SshSettings?
         if useSSH, let sshPort = number(sshPort) {
@@ -548,6 +635,7 @@ struct ConnectionForm: View {
     }
 
     private func save() {
+        if engine == .sqlite { return saveFile() }
         guard let port = number(port) else { return }
         var connection = SavedConnection(
             name: trimmed(name), host: trimmed(host), port: port,
@@ -578,6 +666,20 @@ struct ConnectionForm: View {
         } else {
             store.update(connection)
         }
+        testTask?.cancel()
+        onClose()
+    }
+
+    /// A SQLite connection: the file and the options; no passwords.
+    private func saveFile() {
+        let path = URL(fileURLWithPath: (trimmed(database) as NSString).expandingTildeInPath).standardizedFileURL.path
+        var connection = SavedConnection(name: trimmed(name), host: "", port: 0, database: path, user: "",
+                                         tag: tag, tls: .disable)
+        connection.engine = .sqlite
+        connection.readOnly = readOnly
+        connection.aiAccess = aiAccess
+        if case .edit(let existing) = target { connection.id = existing.id }
+        if isNew { store.add(connection) } else { store.update(connection) }
         testTask?.cancel()
         onClose()
     }
@@ -767,8 +869,8 @@ enum ConnectionFormWindow {
         for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             panel.standardWindowButton(button)?.isHidden = true
         }
-        let form = ConnectionForm(target: target, store: store) { [weak panel] in panel?.close() }
-        let host = NSHostingController(rootView: form)
+        let close: () -> Void = { [weak panel] in panel?.close() }
+        let host = NSHostingController(rootView: ConnectionForm(target: target, store: store, onClose: close))
         host.sizingOptions = .preferredContentSize
         // No room kept for the hidden title bar: the form's header is the top.
         host.safeAreaRegions = []

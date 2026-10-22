@@ -44,6 +44,7 @@ enum MainMenu {
         let workspace: () -> WorkspaceModel?
         let showConnections: () -> Void
         let newConnection: () -> Void
+        let openSqliteFile: () -> Void
         let showSettings: () -> Void
     }
 
@@ -66,6 +67,7 @@ enum MainMenu {
 
         let file = NSMenu(title: "File")
         file.addItem(CommandItem("New Connection…", key: "n", action: actions.newConnection))
+        file.addItem(CommandItem("Open SQLite File…", key: "o", action: actions.openSqliteFile))
         file.addItem(CommandItem("New Query Tab", key: "t", isEnabled: { workspace() != nil }) { workspace()?.newQuery() })
         file.addItem(CommandItem("New Table…", isEnabled: { workspace().map { !$0.connection.readOnly } ?? false }) {
             workspace()?.showsNewTable = true

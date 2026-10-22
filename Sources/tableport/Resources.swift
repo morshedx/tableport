@@ -2,6 +2,7 @@ import AppKit
 import CoreText
 import os
 import SwiftUI
+import TablePortCore
 
 extension Bundle {
     /// The SwiftPM resource bundle, found without `Bundle.module`.
@@ -69,6 +70,38 @@ enum LucideIcon {
 /// The PostgreSQL elephant (Slonik), in its own colours, to mark a
 /// connection as PostgreSQL. The PostgreSQL trademark policy allows the logo
 /// for referring to PostgreSQL.
+/// The engine's logo: PostgreSQL's elephant, or a SQLite badge.
+struct EngineLogo: View {
+    let engine: Engine
+    let size: CGFloat
+
+    var body: some View {
+        switch engine {
+        case .postgres:
+            PostgresLogo(size: size)
+        case .sqlite:
+            if let image = Self.sqlite {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: size, height: size)
+                    .accessibilityLabel("SQLite")
+            } else {
+                Text("Sl")
+                    .font(.system(size: size * 0.42, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: size, height: size)
+                    .background(RoundedRectangle(cornerRadius: size * 0.24).fill(Color(red: 0.06, green: 0.45, blue: 0.75)))
+                    .accessibilityLabel("SQLite")
+            }
+        }
+    }
+
+    private static let sqlite: NSImage? = Bundle.resources?.url(forResource: "sqlite", withExtension: "svg")
+        .flatMap(NSImage.init(contentsOf:))
+}
+
 struct PostgresLogo: View {
     let size: CGFloat
     private static let image: NSImage? = Bundle.resources?.url(forResource: "postgresql", withExtension: "svg")

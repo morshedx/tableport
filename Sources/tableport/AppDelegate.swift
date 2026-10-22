@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 connectionsWindow.show()
                 manager.requestNewConnection = true
             },
+            openSqliteFile: { [unowned self] in openSqliteFile() },
             showSettings: { [unowned self] in showSettings() }
         ))
         manager.onConnected = { [unowned self] connection, session in
@@ -107,6 +108,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { connectionsWindow.show() }
         return true
+    }
+
+    /// Opens a SQLite file through its saved connection, saving one the
+    /// first time so it shows in the Connections window.
+    private func openSqliteFile() {
+        let panel = NSOpenPanel()
+        panel.message = "Choose a SQLite database file"
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let path = url.standardizedFileURL.path
+        if let saved = store.connections.first(where: { $0.engine == .sqlite && $0.database == path }) {
+            return open(saved)
+        }
+        var connection = SavedConnection(name: url.deletingPathExtension().lastPathComponent, host: "", port: 0,
+                                         database: path, user: "", tag: nil, tls: .disable)
+        connection.engine = .sqlite
+        store.add(connection)
+        open(connection)
     }
 
     /// Brings an open connection forward, or starts connecting.
