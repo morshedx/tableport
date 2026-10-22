@@ -228,8 +228,13 @@ impl DatabaseSession {
 }
 
 /// `"schema"."name"`, for copying or pasting into SQL.
+/// The name to show or paste into the query editor, in the engine's own
+/// quoting: MySQL's editor runs in the server's mode, with backticks.
 #[uniffi::export]
-pub fn qualified_name(relation: Relation) -> String {
+pub fn qualified_name(relation: Relation, engine: crate::Engine) -> String {
+    if engine == crate::Engine::Mysql {
+        return format!("{}.{}", crate::mysql::backtick(&relation.schema), crate::mysql::backtick(&relation.name));
+    }
     relation.quoted_name()
 }
 
@@ -251,8 +256,11 @@ pub fn drop_relation_sql(relation: Relation, cascade: bool, engine: crate::Engin
 #[uniffi::export]
 pub fn truncate_sql(relation: Relation, restart_identity: bool, cascade: bool, engine: crate::Engine) -> String {
     // SQLite has no TRUNCATE; DELETE without WHERE empties the table quickly.
-    if engine == crate::Engine::Sqlite {
-        return format!("DELETE FROM {};", relation.quoted_name());
+    match engine {
+        crate::Engine::Sqlite => return format!("DELETE FROM {};", relation.quoted_name()),
+        // TRUNCATE restarts AUTO_INCREMENT on its own, and has no CASCADE.
+        crate::Engine::Mysql => return format!("TRUNCATE TABLE {};", relation.quoted_name()),
+        crate::Engine::Postgres => {}
     }
     format!(
         "TRUNCATE {}{}{};",

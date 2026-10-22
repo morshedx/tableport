@@ -746,11 +746,11 @@ enum SidebarActions {
                 ClosureMenuItem(title: "Open") { workspace.open(relation) },
                 ClosureMenuItem(title: "Open Structure") { workspace.openStructure(relation) },
                 ClosureMenuItem(title: isTable ? "Query This Table" : "Query This View") {
-                    workspace.newQuery(sql: "SELECT * FROM \(qualifiedName(relation: relation))\nLIMIT 100;")
+                    workspace.newQuery(sql: "SELECT * FROM \(qualifiedName(relation: relation, engine: workspace.session.engine()))\nLIMIT 100;")
                 },
                 .separator(),
                 ClosureMenuItem(title: "Copy Name") { copy(relation.name) },
-                ClosureMenuItem(title: "Copy Qualified Name") { copy(qualifiedName(relation: relation)) },
+                ClosureMenuItem(title: "Copy Qualified Name") { copy(qualifiedName(relation: relation, engine: workspace.session.engine())) },
                 ClosureMenuItem(title: "Export…") { workspace.export(relation) },
             ]
             if relation.kind == .materializedView {

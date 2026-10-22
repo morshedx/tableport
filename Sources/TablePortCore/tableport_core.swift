@@ -6806,12 +6806,15 @@ public func dropRoutineSql(routine: Routine, cascade: Bool) -> String  {
 }
 /**
  * `"schema"."name"`, for copying or pasting into SQL.
+ * The name to show or paste into the query editor, in the engine's own
+ * quoting: MySQL's editor runs in the server's mode, with backticks.
  */
-public func qualifiedName(relation: Relation) -> String  {
+public func qualifiedName(relation: Relation, engine: Engine) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_tableport_core_fn_func_qualified_name(
-        FfiConverterTypeRelation_lower(relation),uniffiCallStatus
+        FfiConverterTypeRelation_lower(relation),
+        FfiConverterTypeEngine_lower(engine),uniffiCallStatus
     )
 })
 }
@@ -6992,7 +6995,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tableport_core_checksum_func_drop_routine_sql() != 9876) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tableport_core_checksum_func_qualified_name() != 45469) {
+    if (uniffi_tableport_core_checksum_func_qualified_name() != 39178) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_func_refresh_materialized_view_sql() != 42390) {

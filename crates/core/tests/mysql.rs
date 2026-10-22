@@ -312,3 +312,104 @@ async fn exports_and_reads_full_values() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn reads_and_changes_the_structure() {
+    use tableport_core::{create_table_sql, truncate_sql, ColumnSpec, ConstraintKind, NewTableColumn, StructureChange};
+    on_each_server("structure", |session, database| async move {
+        let relation = users(&database);
+        session
+            .execute(format!(
+                "ALTER TABLE \"{database}\".users ADD COLUMN created TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, \
+                 ADD COLUMN label VARCHAR(20) DEFAULT 'none' COMMENT 'shown name', \
+                 ADD COLUMN code VARCHAR(10) COLLATE utf8mb4_bin, ADD CONSTRAINT positive CHECK (score >= 0), \
+                 ADD UNIQUE KEY unique_label (code)"
+            ))
+            .await
+            .unwrap();
+        let structure = session.structure(relation.clone()).await.unwrap();
+        let column = |name: &str| structure.columns.iter().find(|column| column.name == name).unwrap().clone();
+        assert_eq!(column("id").default_value.as_deref(), Some("AUTO_INCREMENT"));
+        assert!(!column("id").nullable);
+        assert_eq!(column("label").default_value.as_deref(), Some("'none'"));
+        assert_eq!(column("label").comment.as_deref(), Some("shown name"));
+        assert!(column("created").default_value.unwrap().to_uppercase().contains("ON UPDATE CURRENT_TIMESTAMP"));
+        assert_eq!(column("code").column_type, "varchar(10) COLLATE utf8mb4_bin");
+        assert!(structure.indexes.iter().any(|index| index.is_primary && index.definition == "PRIMARY KEY (`id`)"));
+        let kinds: Vec<_> = structure.constraints.iter().map(|constraint| constraint.kind).collect();
+        assert!(kinds.contains(&ConstraintKind::PrimaryKey) && kinds.contains(&ConstraintKind::ForeignKey));
+        assert!(kinds.contains(&ConstraintKind::Unique) && kinds.contains(&ConstraintKind::Check), "{kinds:?}");
+
+        let spec = |detail: &tableport_core::ColumnDetail| ColumnSpec {
+            name: detail.name.clone(),
+            column_type: detail.column_type.clone(),
+            nullable: detail.nullable,
+            default_value: detail.default_value.clone(),
+            comment: detail.comment.clone(),
+        };
+        let apply = |change: StructureChange| {
+            let session = session.clone();
+            let relation = relation.clone();
+            async move { session.apply_structure_change(relation, change).await }
+        };
+        // Renaming keeps the comment, default, collation and AUTO_INCREMENT.
+        for name in ["label", "code", "id", "created"] {
+            let original = column(name);
+            let renamed = ColumnSpec { name: format!("{name}_2"), ..spec(&original) };
+            apply(StructureChange::EditColumn { original: original.clone(), column: renamed }).await.unwrap();
+        }
+        let after = session.structure(relation.clone()).await.unwrap();
+        let changed = |name: &str| after.columns.iter().find(|column| column.name == name).unwrap().clone();
+        assert_eq!(changed("label_2").comment.as_deref(), Some("shown name"));
+        assert_eq!(changed("label_2").default_value.as_deref(), Some("'none'"));
+        assert_eq!(changed("code_2").column_type, "varchar(10) COLLATE utf8mb4_bin");
+        assert_eq!(changed("id_2").default_value.as_deref(), Some("AUTO_INCREMENT"));
+        assert!(changed("created_2").default_value.unwrap().to_uppercase().contains("ON UPDATE CURRENT_TIMESTAMP"));
+
+        // Type, NULL and default together.
+        let label = changed("label_2");
+        let edited = ColumnSpec { column_type: "varchar(40)".into(), nullable: false, default_value: Some("'x'".into()), ..spec(&label) };
+        apply(StructureChange::EditColumn { original: label, column: edited }).await.unwrap();
+        let label = session.structure(relation.clone()).await.unwrap().columns.into_iter().find(|column| column.name == "label_2").unwrap();
+        assert_eq!((label.column_type.as_str(), label.nullable, label.default_value.as_deref()), ("varchar(40)", false, Some("'x'")));
+
+        // Add and drop: column, index, foreign key, constraints.
+        let column_spec = ColumnSpec { name: "note".into(), column_type: "TEXT".into(), nullable: true, default_value: None, comment: Some("it's".into()) };
+        apply(StructureChange::AddColumn { column: column_spec }).await.unwrap();
+        apply(StructureChange::AddIndex { name: "by_name".into(), columns: vec!["name".into()], unique: false }).await.unwrap();
+        apply(StructureChange::DropIndex { name: "by_name".into(), cascade: false }).await.unwrap();
+        let foreign = session.structure(relation.clone()).await.unwrap().constraints.into_iter().find(|c| c.kind == ConstraintKind::ForeignKey).unwrap();
+        apply(StructureChange::DropConstraint { name: foreign.name, cascade: false }).await.unwrap();
+        let teams = Relation { schema: database.clone(), name: "teams".into(), kind: RelationKind::Table };
+        apply(StructureChange::AddForeignKey {
+            name: Some("user_team".into()),
+            column: "team_id".into(),
+            referenced: teams,
+            referenced_column: "id".into(),
+            on_delete: Some("set null".into()),
+        })
+        .await
+        .unwrap();
+        apply(StructureChange::DropConstraint { name: "positive".into(), cascade: false }).await.unwrap();
+        apply(StructureChange::DropConstraint { name: "unique_label".into(), cascade: false }).await.unwrap();
+        apply(StructureChange::DropColumn { name: "note".into(), cascade: false }).await.unwrap();
+        let constraints = session.structure(relation.clone()).await.unwrap().constraints;
+        let names: Vec<_> = constraints.iter().map(|c| (c.name.as_str(), c.kind)).collect();
+        assert_eq!(names, [("PRIMARY", ConstraintKind::PrimaryKey), ("user_team", ConstraintKind::ForeignKey)]);
+        assert!(constraints[1].definition.ends_with("ON DELETE SET NULL"), "{}", constraints[1].definition);
+
+        // New table and truncate.
+        let columns = vec![
+            NewTableColumn { column: ColumnSpec { name: "id".into(), column_type: "INT".into(), nullable: false, default_value: None, comment: None }, primary_key: true },
+            NewTableColumn { column: ColumnSpec { name: "title".into(), column_type: "VARCHAR(80)".into(), nullable: true, default_value: None, comment: Some("headline".into()) }, primary_key: false },
+        ];
+        assert_eq!(create_table_sql(database.clone(), "posts".into(), columns.clone(), Engine::Mysql).unwrap().len(), 1);
+        session.create_table(database.clone(), "posts".into(), columns).await.unwrap();
+        let posts = Relation { schema: database.clone(), name: "posts".into(), kind: RelationKind::Table };
+        session.execute(format!("INSERT INTO \"{database}\".posts VALUES (1, 'a')")).await.unwrap();
+        session.execute(truncate_sql(posts.clone(), true, false, Engine::Mysql)).await.unwrap();
+        assert_eq!(session.row_count(posts.clone(), Vec::new(), Vec::new()).await.unwrap(), 0);
+        assert_eq!(session.structure(posts).await.unwrap().columns[1].comment.as_deref(), Some("headline"));
+    })
+    .await;
+}

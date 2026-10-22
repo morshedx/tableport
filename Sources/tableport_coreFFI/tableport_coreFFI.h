@@ -608,7 +608,7 @@ RustBuffer uniffi_tableport_core_fn_func_drop_routine_sql(RustBuffer routine, in
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_QUALIFIED_NAME
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_QUALIFIED_NAME
-RustBuffer uniffi_tableport_core_fn_func_qualified_name(RustBuffer relation, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_tableport_core_fn_func_qualified_name(RustBuffer relation, RustBuffer engine, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_REFRESH_MATERIALIZED_VIEW_SQL

@@ -52,8 +52,10 @@ pub struct TableStructure {
 #[uniffi::export]
 impl DatabaseSession {
     pub async fn structure(&self, relation: Relation) -> Result<TableStructure, DatabaseError> {
-        if self.engine() == Engine::Sqlite {
-            return self.sqlite_structure(&relation).await;
+        match self.engine() {
+            Engine::Sqlite => return self.sqlite_structure(&relation).await,
+            Engine::Mysql => return self.mysql_structure(&relation).await,
+            Engine::Postgres => {}
         }
         let regclass = relation.regclass()?;
         let column_rows = self
@@ -163,13 +165,13 @@ pub enum StructureChange {
     DropConstraint { name: String, cascade: bool },
 }
 
-/// Identity and generated columns show how they get their value where a
-/// default would be; that text isn't a DEFAULT expression.
-fn is_generated(default_value: &Option<String>) -> bool {
-    default_value.as_deref().is_some_and(|text| text.starts_with("GENERATED "))
+/// Identity, generated and MySQL AUTO_INCREMENT columns show how they get
+/// their value where a default would be; that text isn't a DEFAULT expression.
+pub(crate) fn is_generated(default_value: &Option<String>) -> bool {
+    default_value.as_deref().is_some_and(|text| text.starts_with("GENERATED ") || text == "AUTO_INCREMENT")
 }
 
-fn non_empty(text: &Option<String>) -> Option<&str> {
+pub(crate) fn non_empty(text: &Option<String>) -> Option<&str> {
     text.as_deref().map(str::trim).filter(|text| !text.is_empty())
 }
 
@@ -179,8 +181,10 @@ pub(crate) const REFERENTIAL_ACTIONS: &[&str] = &["NO ACTION", "RESTRICT", "CASC
 /// together, in one transaction, by [`DatabaseSession::apply_structure_change`].
 #[uniffi::export]
 pub fn structure_change_sql(relation: Relation, change: StructureChange, engine: Engine) -> Result<Vec<String>, DatabaseError> {
-    if engine == Engine::Sqlite {
-        return sqlite_structure_change_sql(&relation, change);
+    match engine {
+        Engine::Sqlite => return sqlite_structure_change_sql(&relation, change),
+        Engine::Mysql => return crate::mysql::structure_change_sql(&relation, &change, None),
+        Engine::Postgres => {}
     }
     let table = format!("ALTER TABLE {}", relation.quoted_name());
     let schema = quote_identifier(&relation.schema);
@@ -306,6 +310,17 @@ impl DatabaseSession {
     /// rolls back on its own when a statement fails; an explicit BEGIN would
     /// leave the session in a failed transaction instead.
     pub async fn apply_structure_change(&self, relation: Relation, change: StructureChange) -> Result<(), DatabaseError> {
+        if let Some(link) = self.mysql() {
+            // MySQL commits each DDL statement on its own; most changes are one statement.
+            let statements = self.structure_change_statements(relation, change).await?;
+            return crate::on_runtime(async move {
+                for statement in statements {
+                    link.execute(statement).await?;
+                }
+                Ok(())
+            })
+            .await;
+        }
         if let Some(link) = self.sqlite().filter(|_| crate::sqlite_rebuild::needs_rebuild(&change)) {
             let rebuild = self.sqlite_rebuild(&relation, change).await?;
             let schema = relation.schema.clone();
@@ -330,6 +345,9 @@ impl DatabaseSession {
     pub async fn structure_change_statements(&self, relation: Relation, change: StructureChange) -> Result<Vec<String>, DatabaseError> {
         if self.engine() == Engine::Sqlite && crate::sqlite_rebuild::needs_rebuild(&change) {
             return Ok(self.sqlite_rebuild(&relation, change).await?.statements);
+        }
+        if self.engine() == Engine::Mysql {
+            return self.mysql_structure_change_sql(&relation, change).await;
         }
         structure_change_sql(relation, change, self.engine())
     }
@@ -384,11 +402,15 @@ pub fn create_table_sql(schema: String, name: String, columns: Vec<NewTableColum
         if let Some(default) = non_empty(&column.default_value) {
             definition += &format!(" DEFAULT {default}");
         }
+        // MySQL keeps a column's comment in its definition.
+        if let (Engine::Mysql, Some(comment)) = (engine, non_empty(&column.comment)) {
+            definition += &format!(" COMMENT {}", quote_literal(comment)?);
+        }
         definitions.push(definition);
         if entry.primary_key {
             key.push(quoted.clone());
         }
-        if let Some(comment) = non_empty(&column.comment) {
+        if let Some(comment) = non_empty(&column.comment).filter(|_| engine != Engine::Mysql) {
             comments.push(format!("COMMENT ON COLUMN {table}.{quoted} IS {};", quote_literal(comment)?));
         }
     }

@@ -13,7 +13,10 @@ use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, OptsBuilder, SslOpts, Value};
 use tokio::sync::Mutex;
 
-use crate::rows::{quote_literal, Column, ColumnKind};
+use crate::rows::{quote_identifier, quote_literal, Column, ColumnKind};
+use crate::structure::{
+    non_empty, ColumnDetail, ColumnSpec, ConstraintDetail, ConstraintKind, IndexDetail, StructureChange, TableStructure, REFERENTIAL_ACTIONS,
+};
 use crate::schema::{ForeignKey, Relation, RelationKind, SchemaContents};
 use crate::session::{ConnectionSettings, TlsMode};
 use crate::ssh::{open_tunnel, Tunnel};
@@ -631,6 +634,275 @@ impl DatabaseSession {
     }
 }
 
+// MARK: - Structure
+
+impl DatabaseSession {
+    pub(crate) async fn mysql_structure(&self, relation: &Relation) -> Result<TableStructure, DatabaseError> {
+        let is_mariadb = self.mysql().is_some_and(|link| link.is_mariadb);
+        let schema = quote_literal(&relation.schema)?;
+        let table = quote_literal(&relation.name)?;
+        let column_rows = self
+            .text_rows(format!(
+                "SELECT c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE, c.COLUMN_DEFAULT, c.EXTRA, c.COLUMN_COMMENT, \
+                        c.GENERATION_EXPRESSION, c.DATA_TYPE, \
+                        CASE WHEN c.COLLATION_NAME <> t.TABLE_COLLATION THEN c.COLLATION_NAME END \
+                 FROM information_schema.COLUMNS c JOIN information_schema.TABLES t \
+                   ON t.TABLE_SCHEMA = c.TABLE_SCHEMA AND t.TABLE_NAME = c.TABLE_NAME \
+                 WHERE c.TABLE_SCHEMA = {schema} AND c.TABLE_NAME = {table} ORDER BY c.ORDINAL_POSITION"
+            ))
+            .await?;
+        let columns = column_rows
+            .into_iter()
+            .filter_map(|row| {
+                let [Some(name), Some(column_type), Some(nullable), default, extra, comment, generation, Some(data_type), collation] =
+                    <[Option<String>; 9]>::try_from(row).ok()?
+                else {
+                    return None;
+                };
+                // A collation other than the table's is part of the type, so
+                // editing the column keeps it.
+                let column_type = match collation {
+                    Some(collation) => format!("{column_type} COLLATE {collation}"),
+                    None => column_type,
+                };
+                Some(ColumnDetail {
+                    name,
+                    column_type,
+                    nullable: nullable == "YES",
+                    default_value: default_sql(
+                        default,
+                        extra.as_deref().unwrap_or_default(),
+                        generation.as_deref().unwrap_or_default(),
+                        &data_type,
+                        is_mariadb,
+                    ),
+                    comment: comment.filter(|comment| !comment.is_empty()),
+                })
+            })
+            .collect();
+
+        let index_rows = self
+            .text_rows(format!(
+                "SELECT INDEX_NAME, NON_UNIQUE, GROUP_CONCAT(CONCAT('`', REPLACE(COLUMN_NAME, '`', '``'), '`') ORDER BY SEQ_IN_INDEX SEPARATOR ', ') \
+                 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = {schema} AND TABLE_NAME = {table} \
+                 GROUP BY INDEX_NAME, NON_UNIQUE ORDER BY INDEX_NAME <> 'PRIMARY', INDEX_NAME"
+            ))
+            .await?;
+        let indexes = index_rows
+            .into_iter()
+            .filter_map(|row| {
+                let [Some(name), Some(non_unique), Some(columns)] = <[Option<String>; 3]>::try_from(row).ok()? else {
+                    return None;
+                };
+                let is_primary = name == "PRIMARY";
+                let is_unique = non_unique == "0";
+                let definition = if is_primary {
+                    format!("PRIMARY KEY ({columns})")
+                } else {
+                    format!("CREATE {}INDEX {} ON {} ({columns})", if is_unique { "UNIQUE " } else { "" }, backtick(&name), backtick(&relation.name))
+                };
+                Some(IndexDetail { name, definition, is_unique, is_primary })
+            })
+            .collect();
+
+        let constraint_rows = self
+            .text_rows(format!(
+                "SELECT tc.CONSTRAINT_NAME, tc.CONSTRAINT_TYPE, \
+                        (SELECT GROUP_CONCAT(CONCAT('`', REPLACE(k.COLUMN_NAME, '`', '``'), '`') ORDER BY k.ORDINAL_POSITION SEPARATOR ', ') \
+                         FROM information_schema.KEY_COLUMN_USAGE k WHERE k.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA \
+                           AND k.TABLE_NAME = tc.TABLE_NAME AND k.CONSTRAINT_NAME = tc.CONSTRAINT_NAME), \
+                        (SELECT CONCAT('`', MAX(k.REFERENCED_TABLE_SCHEMA), '`.`', MAX(k.REFERENCED_TABLE_NAME), '` (', \
+                                GROUP_CONCAT(CONCAT('`', k.REFERENCED_COLUMN_NAME, '`') ORDER BY k.ORDINAL_POSITION SEPARATOR ', '), ')') \
+                         FROM information_schema.KEY_COLUMN_USAGE k WHERE k.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA \
+                           AND k.TABLE_NAME = tc.TABLE_NAME AND k.CONSTRAINT_NAME = tc.CONSTRAINT_NAME), \
+                        (SELECT r.DELETE_RULE FROM information_schema.REFERENTIAL_CONSTRAINTS r \
+                         WHERE r.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA AND r.TABLE_NAME = tc.TABLE_NAME \
+                           AND r.CONSTRAINT_NAME = tc.CONSTRAINT_NAME), \
+                        (SELECT cc.CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS cc \
+                         WHERE cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME LIMIT 1) \
+                 FROM information_schema.TABLE_CONSTRAINTS tc \
+                 WHERE tc.TABLE_SCHEMA = {schema} AND tc.TABLE_NAME = {table} \
+                 ORDER BY FIELD(tc.CONSTRAINT_TYPE, 'PRIMARY KEY', 'FOREIGN KEY', 'UNIQUE', 'CHECK'), tc.CONSTRAINT_NAME"
+            ))
+            .await?;
+        let constraints = constraint_rows
+            .into_iter()
+            .filter_map(|row| {
+                let [Some(name), Some(kind), columns, referenced, delete_rule, check] = <[Option<String>; 6]>::try_from(row).ok()? else {
+                    return None;
+                };
+                let columns = columns.unwrap_or_default();
+                let (kind, definition) = match kind.as_str() {
+                    "PRIMARY KEY" => (ConstraintKind::PrimaryKey, format!("PRIMARY KEY ({columns})")),
+                    "UNIQUE" => (ConstraintKind::Unique, format!("UNIQUE ({columns})")),
+                    "FOREIGN KEY" => {
+                        let action = delete_rule.filter(|rule| rule != "NO ACTION" && rule != "RESTRICT");
+                        let action = action.map(|rule| format!(" ON DELETE {rule}")).unwrap_or_default();
+                        (ConstraintKind::ForeignKey, format!("FOREIGN KEY ({columns}) REFERENCES {}{action}", referenced.unwrap_or_default()))
+                    }
+                    "CHECK" => (ConstraintKind::Check, format!("CHECK ({})", check.unwrap_or_default())),
+                    _ => return None,
+                };
+                Some(ConstraintDetail { name, kind, definition })
+            })
+            .collect();
+        Ok(TableStructure { columns, indexes, constraints })
+    }
+
+    /// The statements for a change, with the kind of a constraint to drop
+    /// read from the catalog: MySQL drops each kind its own way.
+    pub(crate) async fn mysql_structure_change_sql(&self, relation: &Relation, change: StructureChange) -> Result<Vec<String>, DatabaseError> {
+        let mut kind = None;
+        if let StructureChange::DropConstraint { name, .. } = &change {
+            let rows = self
+                .text_rows(format!(
+                    "SELECT CONSTRAINT_TYPE FROM information_schema.TABLE_CONSTRAINTS \
+                     WHERE TABLE_SCHEMA = {} AND TABLE_NAME = {} AND CONSTRAINT_NAME = {}",
+                    quote_literal(&relation.schema)?,
+                    quote_literal(&relation.name)?,
+                    quote_literal(name)?
+                ))
+                .await?;
+            kind = rows.into_iter().next().and_then(|row| row.into_iter().next().flatten()).map(|kind| match kind.as_str() {
+                "PRIMARY KEY" => ConstraintKind::PrimaryKey,
+                "FOREIGN KEY" => ConstraintKind::ForeignKey,
+                "UNIQUE" => ConstraintKind::Unique,
+                _ => ConstraintKind::Check,
+            });
+            if kind.is_none() {
+                return Err(DatabaseError::new(format!("No constraint named {name}.")));
+            }
+        }
+        structure_change_sql(relation, &change, kind)
+    }
+}
+
+/// A column's default as SQL. MySQL 8 reports a literal default without its
+/// quotes and an expression without its parentheses; MariaDB reports SQL.
+/// AUTO_INCREMENT, ON UPDATE and generated columns are shown in its place,
+/// as PostgreSQL shows identity columns.
+fn default_sql(default: Option<String>, extra: &str, generation: &str, data_type: &str, is_mariadb: bool) -> Option<String> {
+    let extra_lower = extra.to_ascii_lowercase();
+    if !generation.is_empty() {
+        let storage = if extra_lower.contains("stored") || extra_lower.contains("persistent") { "STORED" } else { "VIRTUAL" };
+        return Some(format!("GENERATED ALWAYS AS ({generation}) {storage}"));
+    }
+    if extra_lower.contains("auto_increment") {
+        return Some("AUTO_INCREMENT".into());
+    }
+    let base = match default {
+        None => None,
+        Some(text) if is_mariadb => Some(text).filter(|text| text != "NULL"),
+        Some(text) if extra_lower.contains("default_generated") => {
+            if text.to_ascii_uppercase().starts_with("CURRENT_TIMESTAMP") {
+                Some(text)
+            } else {
+                Some(format!("({text})"))
+            }
+        }
+        Some(text) if is_numeric_type(data_type) || data_type.eq_ignore_ascii_case("bit") => Some(text),
+        Some(text) => quote_literal(&text).ok(),
+    };
+    let on_update = extra_lower.find("on update ").map(|start| extra[start + "on update ".len()..].trim().to_string());
+    match (base, on_update) {
+        (base, Some(on_update)) => Some(format!("{} ON UPDATE {on_update}", base.unwrap_or_else(|| "NULL".into()))),
+        (base, None) => base,
+    }
+}
+
+/// A column definition for ADD COLUMN and CHANGE COLUMN: MySQL restates the
+/// whole column, so AUTO_INCREMENT and generated columns keep how they get
+/// their values.
+fn column_definition(column: &ColumnSpec) -> Result<String, DatabaseError> {
+    let name = column.name.trim();
+    if name.is_empty() {
+        return Err(DatabaseError::new("The column needs a name."));
+    }
+    let column_type = column.column_type.trim();
+    if column_type.is_empty() {
+        return Err(DatabaseError::new("The column needs a type."));
+    }
+    let mut sql = format!("{} {column_type}", quote_identifier(name));
+    let default = non_empty(&column.default_value);
+    if let Some(generated) = default.filter(|text| text.starts_with("GENERATED ")) {
+        sql += &format!(" {generated}");
+    }
+    sql += if column.nullable { " NULL" } else { " NOT NULL" };
+    match default {
+        Some("AUTO_INCREMENT") => sql += " AUTO_INCREMENT",
+        Some(text) if text.starts_with("GENERATED ") => {}
+        Some(text) => sql += &format!(" DEFAULT {text}"),
+        None => {}
+    }
+    if let Some(comment) = non_empty(&column.comment) {
+        sql += &format!(" COMMENT {}", quote_literal(comment)?);
+    }
+    Ok(sql)
+}
+
+/// The statements for a change, for TablePort's own connection (ANSI
+/// quotes). `constraint_kind` says how to drop a constraint; without it,
+/// MySQL's DROP CONSTRAINT is used.
+pub(crate) fn structure_change_sql(
+    relation: &Relation,
+    change: &StructureChange,
+    constraint_kind: Option<ConstraintKind>,
+) -> Result<Vec<String>, DatabaseError> {
+    let table = format!("ALTER TABLE {}", relation.quoted_name());
+    let name = |name: &str| -> Result<String, DatabaseError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(DatabaseError::new("The name is empty."));
+        }
+        Ok(quote_identifier(name))
+    };
+    Ok(match change {
+        StructureChange::AddColumn { column } => vec![format!("{table} ADD COLUMN {};", column_definition(column)?)],
+        StructureChange::EditColumn { original, column } => {
+            let unchanged = column.name.trim() == original.name
+                && column.column_type.trim() == original.column_type
+                && column.nullable == original.nullable
+                && non_empty(&column.default_value) == non_empty(&original.default_value)
+                && non_empty(&column.comment) == non_empty(&original.comment);
+            if unchanged {
+                return Ok(Vec::new());
+            }
+            vec![format!("{table} CHANGE COLUMN {} {};", quote_identifier(&original.name), column_definition(column)?)]
+        }
+        StructureChange::DropColumn { name: column, .. } => vec![format!("{table} DROP COLUMN {};", name(column)?)],
+        StructureChange::AddIndex { name: index, columns, unique } => {
+            if columns.is_empty() {
+                return Err(DatabaseError::new("Choose at least one column for the index."));
+            }
+            let columns = columns.iter().map(|column| quote_identifier(column)).collect::<Vec<_>>().join(", ");
+            vec![format!("CREATE {}INDEX {} ON {} ({columns});", if *unique { "UNIQUE " } else { "" }, name(index)?, relation.quoted_name())]
+        }
+        StructureChange::DropIndex { name: index, .. } if index == "PRIMARY" => vec![format!("{table} DROP PRIMARY KEY;")],
+        StructureChange::DropIndex { name: index, .. } => vec![format!("DROP INDEX {} ON {};", name(index)?, relation.quoted_name())],
+        StructureChange::AddForeignKey { name: key, column, referenced, referenced_column, on_delete } => {
+            let mut sql = format!("{table} ADD ");
+            if let Some(key) = key.as_deref().map(str::trim).filter(|key| !key.is_empty()) {
+                sql += &format!("CONSTRAINT {} ", quote_identifier(key));
+            }
+            sql += &format!("FOREIGN KEY ({}) REFERENCES {} ({})", name(column)?, referenced.quoted_name(), name(referenced_column)?);
+            if let Some(action) = on_delete.as_deref().map(str::trim).filter(|action| !action.is_empty()) {
+                let action = action.to_uppercase();
+                if !REFERENTIAL_ACTIONS.contains(&action.as_str()) {
+                    return Err(DatabaseError::new(format!("Unknown ON DELETE action: {action}")));
+                }
+                sql += &format!(" ON DELETE {action}");
+            }
+            vec![sql + ";"]
+        }
+        StructureChange::DropConstraint { name: constraint, .. } => vec![match constraint_kind {
+            Some(ConstraintKind::PrimaryKey) => format!("{table} DROP PRIMARY KEY;"),
+            Some(ConstraintKind::ForeignKey) => format!("{table} DROP FOREIGN KEY {};", name(constraint)?),
+            Some(ConstraintKind::Unique) => format!("{table} DROP INDEX {};", name(constraint)?),
+            _ => format!("{table} DROP CONSTRAINT {};", name(constraint)?),
+        }],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -639,5 +911,20 @@ mod tests {
     fn reads_enum_labels() {
         assert_eq!(enum_labels("enum('small','it''s big','a,b')"), vec!["small", "it's big", "a,b"]);
         assert!(enum_labels("int").is_empty());
+    }
+
+    #[test]
+    fn reads_defaults_of_both_servers() {
+        assert_eq!(default_sql(Some("abc".into()), "", "", "varchar", false).as_deref(), Some("'abc'"));
+        assert_eq!(default_sql(Some("0".into()), "", "", "int", false).as_deref(), Some("0"));
+        assert_eq!(default_sql(Some("curdate()".into()), "DEFAULT_GENERATED", "", "date", false).as_deref(), Some("(curdate())"));
+        assert_eq!(
+            default_sql(Some("CURRENT_TIMESTAMP".into()), "DEFAULT_GENERATED on update CURRENT_TIMESTAMP", "", "timestamp", false).as_deref(),
+            Some("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP")
+        );
+        assert_eq!(default_sql(Some("'abc'".into()), "", "", "varchar", true).as_deref(), Some("'abc'"));
+        assert_eq!(default_sql(Some("NULL".into()), "", "", "varchar", true), None);
+        assert_eq!(default_sql(None, "auto_increment", "", "int", false).as_deref(), Some("AUTO_INCREMENT"));
+        assert_eq!(default_sql(None, "STORED GENERATED", "(`a` + 1)", "int", false).as_deref(), Some("GENERATED ALWAYS AS ((`a` + 1)) STORED"));
     }
 }
