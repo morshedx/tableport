@@ -873,7 +873,7 @@ struct ReviewChangesSheet: View {
             case .success(let statements):
                 let sql = statements.map { $0 + ";" }.joined(separator: "\n")
                 ScrollView {
-                    Text(sql)
+                    Text(SQLSyntax.highlighted(sql))
                         .font(AppFont.monoFont(size: 12))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)

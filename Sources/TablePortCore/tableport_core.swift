@@ -907,6 +907,13 @@ public protocol DatabaseSessionProtocol: AnyObject, Sendable {
     
     func structure(relation: Relation) async throws  -> TableStructure
     
+    /**
+     * The statements [`Self::apply_structure_change`] runs, for showing
+     * before Apply. On SQLite, some changes rebuild the table, which needs
+     * its current definition.
+     */
+    func structureChangeStatements(relation: Relation, change: StructureChange) async throws  -> [String]
+    
 }
 /**
  * One open connection to a PostgreSQL server. The connection itself can be
@@ -1478,6 +1485,27 @@ open func structure(relation: Relation)async throws  -> TableStructure  {
             completeFunc: ffi_tableport_core_rust_future_complete_rust_buffer,
             freeFunc: ffi_tableport_core_rust_future_free_rust_buffer,
             liftFunc: FfiConverterTypeTableStructure_lift,
+            errorHandler: FfiConverterTypeDatabaseError_lift
+        )
+}
+    
+    /**
+     * The statements [`Self::apply_structure_change`] runs, for showing
+     * before Apply. On SQLite, some changes rebuild the table, which needs
+     * its current definition.
+     */
+open func structureChangeStatements(relation: Relation, change: StructureChange)async throws  -> [String]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tableport_core_fn_method_databasesession_structure_change_statements(
+                        self.uniffiCloneHandle(),FfiConverterTypeRelation_lower(relation),FfiConverterTypeStructureChange_lower(change)
+                )
+            },
+            pollFunc: ffi_tableport_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tableport_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tableport_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceString.lift,
             errorHandler: FfiConverterTypeDatabaseError_lift
         )
 }
@@ -7080,6 +7108,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_method_databasesession_structure() != 49366) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_method_databasesession_structure_change_statements() != 13153) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_method_localstore_add_history() != 27665) {

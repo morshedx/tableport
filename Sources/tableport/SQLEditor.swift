@@ -353,7 +353,7 @@ struct SQLEditor: NSViewRepresentable {
             let all = NSRange(location: 0, length: text.length)
             storage.beginEditing()
             storage.setAttributes(Self.baseAttributes(), range: all)
-            for (pattern, color) in Self.rules {
+            for (pattern, color) in SQLSyntax.rules {
                 pattern.enumerateMatches(in: storage.string, range: all) { match, _, _ in
                     if let range = match?.range { storage.addAttribute(.foregroundColor, value: color, range: range) }
                 }
@@ -367,29 +367,58 @@ struct SQLEditor: NSViewRepresentable {
             storage.endEditing()
             shadeCurrentStatement()
         }
+    }
+}
 
-        /// Later rules win, so strings and comments come last and override
-        /// keywords inside them.
-        private static let rules: [(NSRegularExpression, NSColor)] = {
-            let keywords = [
-                "select", "from", "where", "and", "or", "not", "in", "is", "null", "as", "on", "join", "left", "right",
-                "inner", "outer", "full", "cross", "group", "by", "order", "having", "limit", "offset", "insert", "into",
-                "values", "update", "set", "delete", "returning", "create", "table", "index", "view", "drop", "alter",
-                "add", "column", "primary", "key", "foreign", "references", "unique", "default", "with", "union", "all",
-                "distinct", "case", "when", "then", "else", "end", "begin", "commit", "rollback", "asc", "desc", "like",
-                "ilike", "between", "exists", "true", "false", "explain", "analyze", "truncate", "cascade", "grant",
-            ]
-            func rule(_ pattern: String, _ color: NSColor, _ options: NSRegularExpression.Options = []) -> (NSRegularExpression, NSColor)? {
-                (try? NSRegularExpression(pattern: pattern, options: options)).map { ($0, color) }
+/// SQL colours, shared by the editor and the SQL shown before a change.
+enum SQLSyntax {
+    /// Later rules win, so strings and comments come last and override
+    /// keywords inside them.
+    static let rules: [(NSRegularExpression, NSColor)] = {
+        let keywords = [
+            "select", "from", "where", "and", "or", "not", "in", "is", "null", "as", "on", "join", "left", "right",
+            "inner", "outer", "full", "cross", "group", "by", "order", "having", "limit", "offset", "insert", "into",
+            "values", "update", "set", "delete", "returning", "create", "table", "index", "view", "drop", "alter",
+            "add", "column", "primary", "key", "foreign", "references", "unique", "default", "with", "union", "all",
+            "distinct", "case", "when", "then", "else", "end", "begin", "commit", "rollback", "asc", "desc", "like",
+            "ilike", "between", "exists", "true", "false", "explain", "analyze", "truncate", "cascade", "grant",
+            "constraint", "check", "rename", "to", "trigger", "collate", "autoincrement", "if",
+        ]
+        func rule(_ pattern: String, _ color: NSColor, _ options: NSRegularExpression.Options = []) -> (NSRegularExpression, NSColor)? {
+            (try? NSRegularExpression(pattern: pattern, options: options)).map { ($0, color) }
+        }
+        return [
+            rule("\\b(\(keywords.joined(separator: "|")))\\b", .systemBlue, .caseInsensitive),
+            rule("\\b\\d+(\\.\\d+)?\\b", .systemOrange),
+            rule("'(?:[^']|'')*'", .systemGreen),
+            rule("--[^\\n]*", .secondaryLabelColor),
+            rule("/\\*[\\s\\S]*?\\*/", .secondaryLabelColor),
+        ].compactMap { $0 }
+    }()
+
+    /// `sql` coloured as in the editor, for SwiftUI text.
+    static func highlighted(_ sql: String) -> AttributedString {
+        var text = AttributedString(sql)
+        let all = NSRange(location: 0, length: (sql as NSString).length)
+        for (pattern, color) in rules {
+            for match in pattern.matches(in: sql, range: all) {
+                guard let range = Range(match.range, in: sql), let attributed = Range(range, in: text) else { continue }
+                text[attributed].foregroundColor = Color(nsColor: color)
             }
-            return [
-                rule("\\b(\(keywords.joined(separator: "|")))\\b", .systemBlue, .caseInsensitive),
-                rule("\\b\\d+(\\.\\d+)?\\b", .systemOrange),
-                rule("'(?:[^']|'')*'", .systemGreen),
-                rule("--[^\\n]*", .secondaryLabelColor),
-                rule("/\\*[\\s\\S]*?\\*/", .secondaryLabelColor),
-            ].compactMap { $0 }
-        }()
+        }
+        return text
+    }
+
+    /// `sql` coloured as in the editor, for AppKit labels.
+    static func highlighted(_ sql: String, font: NSFont) -> NSAttributedString {
+        let text = NSMutableAttributedString(string: sql, attributes: [.font: font, .foregroundColor: NSColor.labelColor])
+        let all = NSRange(location: 0, length: text.length)
+        for (pattern, color) in rules {
+            for match in pattern.matches(in: sql, range: all) {
+                text.addAttribute(.foregroundColor, value: color, range: match.range)
+            }
+        }
+        return text
     }
 }
 

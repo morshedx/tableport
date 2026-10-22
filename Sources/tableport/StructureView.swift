@@ -204,6 +204,36 @@ struct StructureView: View {
     private func confirmDrop(_ title: String, option: String, change: @escaping (Bool) -> StructureChange) {
         let relation = model.relation
         let engine = model.session.engine()
+        if engine == .sqlite {
+            // Dropping a constraint rebuilds the table; its SQL is read from the file first.
+            let session = model.session
+            Task {
+                let statements: [String]
+                do {
+                    statements = try await session.structureChangeStatements(relation: relation, change: change(false))
+                } catch {
+                    failure = error.displayMessage
+                    return
+                }
+                DangerConfirm.run(
+                    title: title,
+                    typeToConfirm: model.isProduction ? relation.name : nil,
+                    options: [],
+                    button: "Drop",
+                    sql: { _ in statements.joined(separator: "\n") }
+                ) { _, _ in
+                    Task {
+                        do {
+                            failure = nil
+                            try await model.applyStructure(change(false))
+                        } catch {
+                            failure = error.displayMessage
+                        }
+                    }
+                }
+            }
+            return
+        }
         DangerConfirm.run(
             title: title,
             typeToConfirm: model.isProduction ? relation.name : nil,
@@ -258,10 +288,13 @@ private struct ChangeFooter: View {
     @Binding var error: String?
     @Environment(\.dismiss) private var dismiss
     @State private var isApplying = false
+    /// Asked of the session: a SQLite rebuild reads the table's definition.
+    @State private var preview: Result<[String], Error>?
 
-    private var preview: Result<[String], Error>? {
-        guard let change else { return nil }
-        return Result { try structureChangeSql(relation: model.relation, change: change, engine: model.session.engine()) }
+    /// SQLite's rebuild starts by creating the changed table under a new name.
+    private var isRebuild: Bool {
+        guard model.session.engine() == .sqlite, case .success(let statements) = preview else { return false }
+        return statements.first?.hasPrefix("CREATE TABLE") == true
     }
 
     var body: some View {
@@ -271,8 +304,15 @@ private struct ChangeFooter: View {
                 switch preview {
                 case .success(let statements) where statements.isEmpty:
                     Text("No changes").foregroundStyle(Theme.inkSecondary)
+                case .success(let statements) where isRebuild:
+                    // A rebuild repeats the whole table; it scrolls rather than growing the sheet.
+                    ScrollView {
+                        Text(SQLSyntax.highlighted(statements.joined(separator: "\n"))).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(height: 180)
                 case .success(let statements):
-                    Text(statements.joined(separator: "\n")).textSelection(.enabled)
+                    Text(SQLSyntax.highlighted(statements.joined(separator: "\n"))).textSelection(.enabled)
                 case .failure(let problem):
                     Text(problem.displayMessage).foregroundStyle(Theme.inkSecondary)
                 case nil:
@@ -287,6 +327,13 @@ private struct ChangeFooter: View {
             .background(Theme.windowBg, in: RoundedRectangle(cornerRadius: 6))
             if let note {
                 Label(note, systemImage: "info.circle").font(Theme.meta).foregroundStyle(Theme.inkSecondary)
+            }
+            if isRebuild {
+                Label("SQLite can't change this in place. TablePort copies the rows into a new table and swaps it in, all in one step.",
+                      systemImage: "info.circle")
+                    .font(Theme.meta)
+                    .foregroundStyle(Theme.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if model.isProduction {
                 Label("Production connection: this changes the live table.", systemImage: "exclamationmark.triangle")
@@ -306,6 +353,23 @@ private struct ChangeFooter: View {
                     .disabled(!canApply || isApplying)
             }
         }
+        .task(id: change) { await loadPreview() }
+    }
+
+    private func loadPreview() async {
+        guard let change else {
+            preview = nil
+            return
+        }
+        let relation = model.relation
+        let result: Result<[String], Error>
+        do {
+            result = .success(try await model.session.structureChangeStatements(relation: relation, change: change))
+        } catch {
+            result = .failure(error)
+        }
+        // A later edit may have started its own preview meanwhile.
+        if !Task.isCancelled { preview = result }
     }
 
     private var canApply: Bool {
@@ -480,7 +544,7 @@ struct NewTableSheet: View {
             Text("SQL").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.inkSecondary)
             Group {
                 switch preview {
-                case .success(let statements): Text(statements.joined(separator: "\n")).textSelection(.enabled)
+                case .success(let statements): Text(SQLSyntax.highlighted(statements.joined(separator: "\n"))).textSelection(.enabled)
                 case .failure(let problem): Text(problem.displayMessage).foregroundStyle(Theme.inkSecondary)
                 }
             }

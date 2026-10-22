@@ -909,7 +909,7 @@ private final class DangerForm: NSObject, NSTextFieldDelegate {
     var currentSQL: String { sql(options) }
 
     @objc private func update() {
-        sqlLabel.stringValue = currentSQL
+        sqlLabel.attributedStringValue = SQLSyntax.highlighted(currentSQL, font: AppFont.mono(size: 12))
         confirm.isEnabled = typeToConfirm.map { nameField?.stringValue == $0 } ?? true
         view.frame.size = view.fittingSize
     }

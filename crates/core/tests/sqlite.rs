@@ -288,6 +288,109 @@ async fn reads_and_changes_the_structure() {
     assert_eq!(rows.result_sets[0].rows[0][0].as_deref(), Some("1"), "INTEGER PRIMARY KEY numbers rows itself");
 }
 
+async fn column_of(session: &DatabaseSession, relation: tableport_core::Relation, name: &str) -> tableport_core::ColumnDetail {
+    session.structure(relation).await.unwrap().columns.into_iter().find(|column| column.name == name).unwrap()
+}
+
+async fn table_sql(session: &DatabaseSession) -> String {
+    let result = session.run_query("SELECT sql FROM sqlite_master WHERE name = 'posts'".into(), 1).await.unwrap();
+    result.result_sets[0].rows[0][0].clone().unwrap()
+}
+
+#[tokio::test]
+async fn rebuilds_the_table_for_changes_sqlite_cant_make_in_place() {
+    use tableport_core::{ColumnSpec, StructureChange};
+    let setup = SHOP.to_string()
+        + "CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT CHECK (length(title) > 0) COLLATE NOCASE,
+                              user_id INTEGER, CONSTRAINT one_title UNIQUE (title));
+           CREATE INDEX posts_user ON posts (user_id);
+           CREATE TABLE log (note TEXT);
+           CREATE TRIGGER posts_log AFTER INSERT ON posts BEGIN INSERT INTO log VALUES (new.title); END;
+           CREATE VIEW titles AS SELECT title FROM posts;
+           INSERT INTO posts (title, user_id) VALUES ('a', 1), ('b', 2), ('gone', 9);
+           DELETE FROM posts WHERE title = 'gone';";
+    let file = TempDatabase::new("rebuild", &setup);
+    let session = DatabaseSession::connect(file.settings(false)).await.unwrap();
+    let posts = || tableport_core::Relation { schema: "main".into(), name: "posts".into(), kind: tableport_core::RelationKind::Table };
+    let spec = |detail: &tableport_core::ColumnDetail| ColumnSpec {
+        name: detail.name.clone(),
+        column_type: detail.column_type.clone(),
+        nullable: detail.nullable,
+        default_value: detail.default_value.clone(),
+        comment: None,
+    };
+
+    // Type, NOT NULL, default and a rename in one change.
+    let title = column_of(&session, posts(), "title").await;
+    let change = StructureChange::EditColumn {
+        original: title.clone(),
+        column: ColumnSpec { name: "heading".into(), column_type: "VARCHAR(80)".into(), nullable: false, default_value: Some("'untitled'".into()), ..spec(&title) },
+    };
+    let preview = session.structure_change_statements(posts(), change.clone()).await.unwrap();
+    assert!(preview[0].starts_with("CREATE TABLE \"main\".\"_tableport_new_posts\""), "{preview:?}");
+    session.apply_structure_change(posts(), change).await.unwrap();
+    let definition = table_sql(&session).await;
+    for kept in ["AUTOINCREMENT", "CHECK (length(\"heading\") > 0)", "COLLATE NOCASE", "CONSTRAINT one_title UNIQUE (\"heading\")", "VARCHAR(80)", "NOT NULL DEFAULT 'untitled'"] {
+        assert!(definition.contains(kept), "{kept} in {definition}");
+    }
+    let objects = session.run_query("SELECT name FROM sqlite_master WHERE tbl_name = 'posts' ORDER BY name".into(), 10).await.unwrap();
+    let names: Vec<_> = objects.result_sets[0].rows.iter().map(|row| row[0].clone().unwrap()).collect();
+    assert_eq!(names, ["posts", "posts_log", "posts_user", "sqlite_autoindex_posts_1"]);
+    // The rows, the AUTOINCREMENT counter, the trigger and the view all survive.
+    session.execute("INSERT INTO posts (heading, user_id) VALUES ('c', 1)".into()).await.unwrap();
+    let rows = session.run_query("SELECT id, heading FROM posts ORDER BY id; SELECT count(*) FROM log; SELECT count(*) FROM titles".into(), 10).await.unwrap();
+    let ids: Vec<_> = rows.result_sets[0].rows.iter().map(|row| row[0].clone().unwrap()).collect();
+    assert_eq!(ids, ["1", "2", "4"], "id 3 was used before the rebuild");
+    assert_eq!(rows.result_sets[1].rows[0][0].as_deref(), Some("4"));
+    assert_eq!(rows.result_sets[2].rows[0][0].as_deref(), Some("3"));
+
+    // A NOT NULL the rows break: SQLite refuses, nothing changes.
+    let user = column_of(&session, posts(), "user_id").await;
+    session.execute("INSERT INTO posts (heading) VALUES ('no user')".into()).await.unwrap();
+    let change = StructureChange::EditColumn { original: user.clone(), column: ColumnSpec { nullable: false, ..spec(&user) } };
+    let error = session.apply_structure_change(posts(), change).await.unwrap_err();
+    assert!(error.message().contains("NOT NULL"), "{error}");
+    assert!(column_of(&session, posts(), "user_id").await.nullable);
+
+    // A foreign key the rows break: refused after the check, nothing changes.
+    session.execute("UPDATE posts SET user_id = 99 WHERE heading = 'no user'".into()).await.unwrap();
+    let key = StructureChange::AddForeignKey {
+        name: Some("posts_user_fk".into()),
+        column: "user_id".into(),
+        referenced: users(),
+        referenced_column: "id".into(),
+        on_delete: Some("cascade".into()),
+    };
+    let error = session.apply_structure_change(posts(), key.clone()).await.unwrap_err();
+    assert!(error.message().contains("1 rows of posts"), "{error}");
+    session.execute("DELETE FROM posts WHERE heading = 'no user'".into()).await.unwrap();
+    session.apply_structure_change(posts(), key).await.unwrap();
+    assert!(table_sql(&session).await.contains("CONSTRAINT \"posts_user_fk\" FOREIGN KEY (\"user_id\") REFERENCES \"users\" (\"id\") ON DELETE CASCADE"));
+    let enforced = session.execute("INSERT INTO posts (heading, user_id) VALUES ('x', 99)".into()).await.unwrap_err();
+    assert!(enforced.message().contains("FOREIGN KEY"), "foreign keys are back on: {enforced}");
+
+    // Dropping it, and the UNIQUE, by the names the Structure view shows.
+    let constraints = session.structure(posts()).await.unwrap().constraints;
+    assert!(constraints.iter().any(|c| c.name == "posts_user_fk"), "the given name shows: {constraints:?}");
+    session.apply_structure_change(posts(), StructureChange::DropConstraint { name: "posts_user_fk".into(), cascade: false }).await.unwrap();
+    session.apply_structure_change(posts(), StructureChange::DropConstraint { name: "sqlite_autoindex_posts_1".into(), cascade: false }).await.unwrap();
+    let definition = table_sql(&session).await;
+    assert!(!definition.contains("FOREIGN KEY") && !definition.contains("UNIQUE"), "{definition}");
+    assert!(session.structure(posts()).await.unwrap().constraints.iter().all(|c| c.kind == tableport_core::ConstraintKind::PrimaryKey));
+
+    // A column foreign key on the parent side: users.team_id → teams.
+    let teams = tableport_core::Relation { schema: "main".into(), name: "teams".into(), kind: tableport_core::RelationKind::Table };
+    let name = column_of(&session, teams.clone(), "name").await;
+    session
+        .apply_structure_change(teams.clone(), StructureChange::EditColumn { original: name.clone(), column: ColumnSpec { column_type: "VARCHAR(40)".into(), ..spec(&name) } })
+        .await
+        .unwrap();
+    session.apply_structure_change(users(), StructureChange::DropConstraint { name: "foreign key 1".into(), cascade: false }).await.unwrap();
+    let rows = session.run_query("SELECT count(*) FROM users; SELECT count(*) FROM pragma_foreign_key_list('users')".into(), 1).await.unwrap();
+    assert_eq!(rows.result_sets[0].rows[0][0].as_deref(), Some("4"));
+    assert_eq!(rows.result_sets[1].rows[0][0].as_deref(), Some("0"));
+}
+
 #[tokio::test]
 async fn autocompletes_tables_columns_and_functions() {
     use tableport_core::{CompletionKind, KeywordCase};

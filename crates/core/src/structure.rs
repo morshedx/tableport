@@ -173,7 +173,7 @@ fn non_empty(text: &Option<String>) -> Option<&str> {
     text.as_deref().map(str::trim).filter(|text| !text.is_empty())
 }
 
-const REFERENTIAL_ACTIONS: &[&str] = &["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"];
+pub(crate) const REFERENTIAL_ACTIONS: &[&str] = &["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"];
 
 /// The statements that make `change` on `relation`, in order. They are run
 /// together, in one transaction, by [`DatabaseSession::apply_structure_change`].
@@ -306,6 +306,11 @@ impl DatabaseSession {
     /// rolls back on its own when a statement fails; an explicit BEGIN would
     /// leave the session in a failed transaction instead.
     pub async fn apply_structure_change(&self, relation: Relation, change: StructureChange) -> Result<(), DatabaseError> {
+        if let Some(link) = self.sqlite().filter(|_| crate::sqlite_rebuild::needs_rebuild(&change)) {
+            let rebuild = self.sqlite_rebuild(&relation, change).await?;
+            let schema = relation.schema.clone();
+            return crate::on_runtime(async move { link.rebuild(rebuild, schema).await }).await;
+        }
         let statements = structure_change_sql(relation, change, self.engine())?;
         if statements.is_empty() {
             return Ok(());
@@ -314,6 +319,19 @@ impl DatabaseSession {
             return crate::on_runtime(async move { link.apply_checked(statements, 0).await }).await;
         }
         self.execute(statements.join("\n")).await
+    }
+}
+
+#[uniffi::export]
+impl DatabaseSession {
+    /// The statements [`Self::apply_structure_change`] runs, for showing
+    /// before Apply. On SQLite, some changes rebuild the table, which needs
+    /// its current definition.
+    pub async fn structure_change_statements(&self, relation: Relation, change: StructureChange) -> Result<Vec<String>, DatabaseError> {
+        if self.engine() == Engine::Sqlite && crate::sqlite_rebuild::needs_rebuild(&change) {
+            return Ok(self.sqlite_rebuild(&relation, change).await?.statements);
+        }
+        structure_change_sql(relation, change, self.engine())
     }
 }
 
@@ -400,7 +418,7 @@ impl DatabaseSession {
 fn sqlite_structure_change_sql(relation: &Relation, change: StructureChange) -> Result<Vec<String>, DatabaseError> {
     let table = format!("ALTER TABLE {}", relation.quoted_name());
     let rebuild = |what: &str| {
-        DatabaseError::new(format!("SQLite can't {what} in place. TablePort will do it by rebuilding the table in a later version."))
+        DatabaseError::new(format!("SQLite can't {what} in place; TablePort rebuilds the table for it."))
     };
     let column_name = |name: &str| -> Result<String, DatabaseError> {
         if name.trim().is_empty() {
@@ -419,7 +437,7 @@ fn sqlite_structure_change_sql(relation: &Relation, change: StructureChange) -> 
                 sql += " NOT NULL";
             }
             if let Some(default) = non_empty(&column.default_value) {
-                sql += &format!(" DEFAULT {default}");
+                sql += &format!(" DEFAULT {}", crate::sqlite_rebuild::default_expression(default));
             }
             Ok(vec![sql + ";"])
         }

@@ -108,6 +108,64 @@ impl SqliteLink {
         .await
     }
 
+    /// A table rebuild: its statements in one transaction with foreign keys
+    /// off, as SQLite's recipe asks, then a check that every foreign key of
+    /// the checked tables still finds its row. Foreign keys can only be
+    /// switched outside a transaction. Legacy ALTER TABLE keeps the rename
+    /// from rewriting, or refusing over, views and triggers that name the
+    /// table while it is briefly gone.
+    pub(crate) async fn rebuild(&self, rebuild: crate::sqlite_rebuild::Rebuild, schema: String) -> Result<(), DatabaseError> {
+        self.with(move |connection| {
+            let foreign_keys: i64 =
+                connection.query_row("PRAGMA foreign_keys", [], |row| row.get(0)).map_err(|error| sqlite_error(&error))?;
+            connection
+                .execute_batch("PRAGMA foreign_keys = OFF; PRAGMA legacy_alter_table = ON;")
+                .map_err(|error| sqlite_error(&error))?;
+            let result = (|| {
+                let transaction = connection.unchecked_transaction().map_err(|error| sqlite_error(&error))?;
+                for statement in &rebuild.statements {
+                    transaction.execute_batch(statement).map_err(|error| sqlite_error(&error))?;
+                }
+                for table in &rebuild.checked {
+                    let violations: i64 = transaction
+                        .query_row(
+                            &format!(
+                                "SELECT count(*) FROM pragma_foreign_key_check({}, {})",
+                                crate::rows::quote_literal(table)?,
+                                crate::rows::quote_literal(&schema)?
+                            ),
+                            [],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| sqlite_error(&error))?;
+                    if violations > 0 {
+                        return Err(DatabaseError::new(format!(
+                            "{violations} rows of {table} would point at rows that don't exist. Nothing was changed."
+                        )));
+                    }
+                }
+                transaction.commit().map_err(|error| sqlite_error(&error))
+            })();
+            let restore = connection
+                .execute_batch(&format!(
+                    "PRAGMA legacy_alter_table = OFF; PRAGMA foreign_keys = {};",
+                    if foreign_keys == 1 { "ON" } else { "OFF" }
+                ))
+                .map_err(|error| sqlite_error(&error));
+            result.and(restore).map_err(|error| {
+                if error.message().contains("foreign key mismatch") {
+                    DatabaseError::new(format!(
+                        "SQLite needs the referenced column to be the primary key or to have a unique index. ({})",
+                        error.message()
+                    ))
+                } else {
+                    error
+                }
+            })
+        })
+        .await
+    }
+
     /// The query editor's Run: each statement in turn, as one transaction
     /// unless the SQL manages its own (BEGIN, COMMIT…). Keeps the first
     /// `max_rows` rows of each result and counts the rest.
@@ -549,11 +607,31 @@ impl DatabaseSession {
                 None => keys.push((id, vec![from], referenced, vec![to.unwrap_or_default()], on_delete)),
             }
         }
+        // Names given with CONSTRAINT; the others are numbered in SQLite's order.
+        let definition = self
+            .text_rows(format!(
+                "SELECT sql FROM {}.sqlite_master WHERE type = 'table' AND name = {table}",
+                quote_identifier(&relation.schema)
+            ))
+            .await?
+            .into_iter()
+            .next()
+            .and_then(|row| row.into_iter().next().flatten())
+            .unwrap_or_default();
+        let mut names = crate::sqlite_rebuild::foreign_key_names(&definition);
         for (index, (_, from, referenced, to, on_delete)) in keys.into_iter().enumerate() {
+            let same = |columns: &[String]| {
+                columns.len() == from.len() && columns.iter().zip(&from).all(|(column, from)| column.eq_ignore_ascii_case(from))
+            };
+            let name = names
+                .iter()
+                .position(|(columns, table, _)| same(columns) && table.eq_ignore_ascii_case(&referenced))
+                .map(|position| names.remove(position).2)
+                .unwrap_or_else(|| format!("foreign key {}", index + 1));
             let target = if to.iter().all(String::is_empty) { String::new() } else { format!("({})", to.join(", ")) };
             let action = if on_delete == "NO ACTION" { String::new() } else { format!(" ON DELETE {on_delete}") };
             constraints.push(ConstraintDetail {
-                name: format!("foreign key {}", index + 1),
+                name,
                 kind: ConstraintKind::ForeignKey,
                 definition: format!("FOREIGN KEY ({}) REFERENCES {referenced}{target}{action}", from.join(", ")),
             });

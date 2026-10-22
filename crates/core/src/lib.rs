@@ -16,6 +16,7 @@ mod schema;
 mod session;
 mod sql_text;
 mod sqlite;
+mod sqlite_rebuild;
 mod ssh;
 mod store;
 mod structure;
