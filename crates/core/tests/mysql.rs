@@ -266,3 +266,49 @@ async fn runs_queries_in_the_servers_own_mode() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn exports_and_reads_full_values() {
+    use tableport_core::{ExportFormat, ExportScope};
+    on_each_server("export", |session, database| async move {
+        let relation = users(&database);
+        let columns = session.columns(relation.clone()).await.unwrap();
+        let key = vec!["id".to_string()];
+        let path = |format: &str| std::env::temp_dir().join(format!("tableport-mysql-{database}.{format}")).to_string_lossy().into_owned();
+        let export = |format, file: String| {
+            let session = session.clone();
+            let relation = relation.clone();
+            let columns = columns.clone();
+            let key = key.clone();
+            async move { session.export_rows(relation, columns, Vec::new(), None, key, ExportScope::All, format, file).await.unwrap() }
+        };
+
+        assert_eq!(export(ExportFormat::Csv, path("csv")).await, 5);
+        let csv = std::fs::read_to_string(path("csv")).unwrap();
+        assert!(csv.starts_with("id,name,score,joined,seen,size,avatar,team_id\n1,Ada,9.50,2024-01-02,2024-01-02 03:04:05,small,\\xcafe,1\n"), "{csv}");
+
+        assert_eq!(export(ExportFormat::Json, path("json")).await, 5);
+        let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path("json")).unwrap()).unwrap();
+        assert_eq!(json[0]["score"].to_string(), "9.50", "an exact number, as stored");
+        assert_eq!(json[0]["avatar"], serde_json::json!("\\xcafe"));
+        assert_eq!(json[1]["size"], serde_json::json!("it's big"));
+        assert_eq!(json[4]["name"], serde_json::json!("back\\slash"));
+
+        // The SQL file loads back in the server's default mode, values intact.
+        assert_eq!(export(ExportFormat::Sql, path("sql")).await, 5);
+        let sql = std::fs::read_to_string(path("sql")).unwrap();
+        assert!(sql.contains(&format!("INSERT INTO `{database}`.`users` (`id`, `name`")), "{sql}");
+        let before = session.run_query(format!("SELECT * FROM `{database}`.users ORDER BY id"), 100).await.unwrap();
+        session.run_query(format!("DELETE FROM `{database}`.users; {sql}"), 1).await.unwrap();
+        let after = session.run_query(format!("SELECT * FROM `{database}`.users ORDER BY id"), 100).await.unwrap();
+        assert_eq!(before.result_sets[0].rows, after.result_sets[0].rows);
+        for format in ["csv", "json", "sql"] {
+            std::fs::remove_file(path(format)).ok();
+        }
+
+        let full = session.full_rows(relation, columns, key, vec![vec!["5".into()], vec!["1".into()]]).await.unwrap();
+        assert_eq!(full[0][1].as_deref(), Some("back\\slash"));
+        assert_eq!(full[1][6].as_deref(), Some("\\xcafe"));
+    })
+    .await;
+}

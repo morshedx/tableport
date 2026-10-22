@@ -300,6 +300,154 @@ impl MysqlLink {
     }
 }
 
+impl MysqlLink {
+    /// Writes the rows of `select` to `path` as they arrive, and returns how
+    /// many it wrote. The SQL format is for MySQL's own tools: backtick
+    /// names, and strings with backslashes escaped, as mysqldump writes them.
+    pub(crate) async fn export(
+        &self,
+        select: String,
+        columns: Vec<Column>,
+        relation: Relation,
+        format: crate::export::ExportFormat,
+        path: String,
+    ) -> Result<u64, DatabaseError> {
+        use crate::export::ExportFormat;
+        use tokio::io::AsyncWriteExt;
+        let write_error = |error: std::io::Error| DatabaseError::new(format!("Can't write {path}: {error}."));
+        let file = tokio::fs::File::create(&path).await.map_err(|error| DatabaseError::new(format!("Can't create {path}: {error}.")))?;
+        let mut out = tokio::io::BufWriter::new(file);
+        let mut conn = self.internal().await?;
+        let mut result = conn.query_iter(select).await.map_err(|error| self.fail(error))?;
+        let result_columns = result.columns().unwrap_or_else(|| Vec::new().into());
+        let names: Vec<String> = result_columns.iter().map(|column| column.name_str().into_owned()).collect();
+        let target = format!("{}.{}", backtick(&relation.schema), backtick(&relation.name));
+        let quoted_names = if columns.is_empty() { names.clone() } else { columns.iter().map(|column| column.name.clone()).collect() }
+            .iter()
+            .map(|name| backtick(name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut count = 0u64;
+        match format {
+            ExportFormat::Csv => {
+                let header = names.iter().map(|name| crate::sqlite::csv_field(name)).collect::<Vec<_>>().join(",");
+                out.write_all(format!("{header}\n").as_bytes()).await.map_err(write_error)?;
+            }
+            ExportFormat::Json => out.write_all(b"[").await.map_err(write_error)?,
+            ExportFormat::Sql => {}
+        }
+        while let Some(row) = result.next().await.map_err(|error| self.fail(error))? {
+            let values = row.unwrap();
+            let line = match format {
+                ExportFormat::Csv => {
+                    let fields = values
+                        .into_iter()
+                        .zip(result_columns.iter())
+                        .map(|(value, column)| display(value, column).as_deref().map(crate::sqlite::csv_field).unwrap_or_default())
+                        .collect::<Vec<_>>();
+                    format!("{}\n", fields.join(","))
+                }
+                ExportFormat::Json => {
+                    let object: serde_json::Map<String, serde_json::Value> =
+                        names.iter().cloned().zip(values.into_iter().zip(result_columns.iter()).map(|(value, column)| json(value, column))).collect();
+                    format!("{}{}", if count == 0 { "\n  " } else { ",\n  " }, serde_json::Value::Object(object))
+                }
+                ExportFormat::Sql => {
+                    let literals =
+                        values.into_iter().zip(result_columns.iter()).map(|(value, column)| literal(value, column)).collect::<Vec<_>>();
+                    format!("INSERT INTO {target} ({quoted_names}) VALUES ({});\n", literals.join(", "))
+                }
+            };
+            out.write_all(line.as_bytes()).await.map_err(write_error)?;
+            count += 1;
+        }
+        result.drop_result().await.map_err(|error| self.fail(error))?;
+        if format == ExportFormat::Json {
+            out.write_all(if count == 0 { b"]\n" } else { b"\n]\n" }).await.map_err(write_error)?;
+        }
+        out.flush().await.map_err(write_error)?;
+        Ok(count)
+    }
+
+    /// One statement's rows as JSON objects, numbers as numbers, for AI access.
+    pub(crate) async fn json_rows(&self, sql: String) -> Result<Vec<serde_json::Value>, DatabaseError> {
+        let mut conn = self.internal().await?;
+        let mut result = conn.query_iter(sql).await.map_err(|error| self.fail(error))?;
+        let columns = result.columns().unwrap_or_else(|| Vec::new().into());
+        let mut rows = Vec::new();
+        while let Some(row) = result.next().await.map_err(|error| self.fail(error))? {
+            let object: serde_json::Map<String, serde_json::Value> = columns
+                .iter()
+                .map(|column| column.name_str().into_owned())
+                .zip(row.unwrap().into_iter().zip(columns.iter()).map(|(value, column)| json(value, column)))
+                .collect();
+            rows.push(serde_json::Value::Object(object));
+        }
+        result.drop_result().await.map_err(|error| self.fail(error))?;
+        Ok(rows)
+    }
+}
+
+/// `` `name` ``, with inner backticks doubled: MySQL's own quoting, for SQL
+/// that leaves TablePort.
+pub(crate) fn backtick(name: &str) -> String {
+    format!("`{}`", name.replace('`', "``"))
+}
+
+/// A value as the grid shows it: bytes as `\x…` hex.
+fn display(value: Value, column: &mysql_async::Column) -> Option<String> {
+    match value {
+        Value::Bytes(bytes) if is_binary_column(column) => Some(hex(&bytes)),
+        value => text(value),
+    }
+}
+
+fn json(value: Value, column: &mysql_async::Column) -> serde_json::Value {
+    let Some(text) = display(value, column) else { return serde_json::Value::Null };
+    if is_numeric_column(column.column_type()) {
+        if let Ok(number) = text.parse::<serde_json::Number>() {
+            return serde_json::Value::Number(number);
+        }
+    }
+    if column.column_type() == mysql_async::consts::ColumnType::MYSQL_TYPE_JSON {
+        if let Ok(parsed) = serde_json::from_str(&text) {
+            return parsed;
+        }
+    }
+    serde_json::Value::String(text)
+}
+
+/// A value as a MySQL literal in the server's default mode.
+fn literal(value: Value, column: &mysql_async::Column) -> String {
+    match value {
+        Value::NULL => "NULL".to_string(),
+        Value::Bytes(bytes) if is_binary_column(column) => {
+            format!("X'{}'", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>())
+        }
+        value => {
+            let text = text(value).unwrap_or_default();
+            if is_numeric_column(column.column_type()) && text.parse::<f64>().is_ok() {
+                return text;
+            }
+            let mut quoted = String::with_capacity(text.len() + 2);
+            quoted.push('\'');
+            for character in text.chars() {
+                match character {
+                    '\\' => quoted.push_str("\\\\"),
+                    '\'' => quoted.push_str("\\'"),
+                    '\0' => quoted.push_str("\\0"),
+                    '\n' => quoted.push_str("\\n"),
+                    '\r' => quoted.push_str("\\r"),
+                    '\u{1a}' => quoted.push_str("\\Z"),
+                    other => quoted.push(other),
+                }
+            }
+            quoted.push('\'');
+            quoted
+        }
+    }
+}
+
 /// Bytes of BLOB, BINARY and VARBINARY results (the binary character set).
 fn is_binary_column(column: &mysql_async::Column) -> bool {
     use mysql_async::consts::ColumnType::*;

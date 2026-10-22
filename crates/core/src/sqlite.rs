@@ -391,7 +391,7 @@ fn json(value: ValueRef<'_>) -> serde_json::Value {
 }
 
 /// RFC 4180 quoting, as the clipboard's CSV.
-fn csv_field(text: &str) -> String {
+pub(crate) fn csv_field(text: &str) -> String {
     if text.contains([',', '"', '\n', '\r']) || text.starts_with(' ') || text.ends_with(' ') {
         format!("\"{}\"", text.replace('"', "\"\""))
     } else {

@@ -54,6 +54,9 @@ impl DatabaseSession {
         if let Some(link) = self.sqlite() {
             return on_runtime(async move { link.export(select, columns, relation, format, path).await }).await;
         }
+        if let Some(link) = self.mysql() {
+            return on_runtime(async move { link.export(select, columns, relation, format, path).await }).await;
+        }
         let client = self.client()?;
         let endpoint = self.settings().endpoint();
         on_runtime(async move {
