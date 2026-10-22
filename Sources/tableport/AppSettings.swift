@@ -41,6 +41,10 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(queryRowLimit, forKey: "queryRowLimit") }
     }
 
+    /// Reopen the last session's connections and tabs at launch.
+    @Published var restoreSession: Bool {
+        didSet { defaults.set(restoreSession, forKey: "restoreSession") }
+    }
     /// How autocomplete writes keywords.
     @Published var keywordCase: KeywordCase {
         didSet { defaults.set(Self.name(of: keywordCase), forKey: "keywordCase") }
@@ -61,6 +65,7 @@ final class AppSettings: ObservableObject {
         confirmProductionWrites = defaults.object(forKey: "confirmProductionWrites") as? Bool ?? true
         editorFontSize = (11...20).contains(defaults.double(forKey: "editorFontSize")) ? defaults.double(forKey: "editorFontSize") : 13
         gridFontSize = (10...16).contains(defaults.double(forKey: "gridFontSize")) ? defaults.double(forKey: "gridFontSize") : 12
+        restoreSession = defaults.object(forKey: "restoreSession") as? Bool ?? true
         let savedCase = defaults.string(forKey: "keywordCase")
         keywordCase = Self.keywordCases.first { $0.1 == savedCase }?.0 ?? .upper
         queryRowLimit = Self.queryRowLimits.contains(defaults.integer(forKey: "queryRowLimit")) ? defaults.integer(forKey: "queryRowLimit") : 1000

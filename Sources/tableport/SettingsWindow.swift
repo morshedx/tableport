@@ -48,6 +48,14 @@ struct SettingsView: View {
                 picker("Theme", $settings.appearance, AppSettings.Appearance.allCases.map { ($0, $0.rawValue) })
             }
         }
+        SettingsGroup("Startup") {
+            SettingsRow("arrow.counterclockwise", Theme.Tile.green, "Reopen connections and tabs",
+                        hint: "At launch, reconnect what was open when you quit, with its tabs and SQL.") {
+                Toggle("Reopen connections and tabs", isOn: $settings.restoreSession)
+                    .toggleStyle(ThemeToggleStyle())
+                    .labelsHidden()
+            }
+        }
         SettingsGroup("Tables") {
             SettingsRow("tablecells", Theme.Tile.blue, "Rows per page", hint: "How many rows a table tab loads at a time.") {
                 picker("Rows per page", $settings.pageSize, AppSettings.pageSizes.map { ($0, "\($0)") })

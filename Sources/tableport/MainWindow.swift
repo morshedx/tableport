@@ -194,7 +194,8 @@ final class WorkspaceModel: ObservableObject {
 
     /// Opens a new session on another database of the same server. The
     /// tabs belong to the old database, so they close.
-    func switchDatabase(to name: String) {
+    /// `then` runs once the new database is open (restoring a session).
+    func switchDatabase(to name: String, then: (() -> Void)? = nil) {
         guard name != session.settings().database else { return }
         guard DiscardPrompt.confirm(changeCount: changeCount) else { return }
         var settings = session.settings()
@@ -214,6 +215,7 @@ final class WorkspaceModel: ObservableObject {
                 selectedTab = nil
                 reload()
                 oldSession.close()
+                then?()
             } catch {
                 switchError = "Could not open \(name): \(error.displayMessage)"
             }
@@ -410,6 +412,52 @@ final class WorkspaceModel: ObservableObject {
             } catch {
                 newQuery(sql: "-- \(error.displayMessage)")
             }
+        }
+    }
+
+    // MARK: Session restore
+
+    /// This window as it should reopen on the next launch.
+    func savedWindow() -> SavedWindow {
+        let saved: [SavedWindow.Tab] = tabs.map { tab in
+            switch tab {
+            case .relation(let relation):
+                return .relation(schema: relation.schema, name: relation.name, kind: relation.kind.savedName)
+            case .query:
+                let model = queryModels[tab.id]
+                return .query(sql: model?.sql ?? "", savedQueryID: model?.savedQuery?.id)
+            }
+        }
+        return SavedWindow(connectionID: connection.id, database: session.settings().database, schema: sidebar.schema,
+                           tabs: saved, selectedTab: tabs.firstIndex { $0.id == selectedTab })
+    }
+
+    /// Reopens a saved window's database, schema and tabs.
+    func restore(_ saved: SavedWindow) {
+        if saved.database != session.settings().database {
+            switchDatabase(to: saved.database) { [weak self] in self?.restoreTabs(saved) }
+        } else {
+            restoreTabs(saved)
+        }
+    }
+
+    private func restoreTabs(_ saved: SavedWindow) {
+        // Kept if the schema still exists once the sidebar has loaded.
+        sidebar.schema = saved.schema
+        for tab in saved.tabs {
+            switch tab {
+            case .relation(let schema, let name, let kind):
+                open(Relation(schema: schema, name: name, kind: RelationKind(savedName: kind) ?? .table))
+            case .query(let sql, let savedQueryID):
+                newQuery(sql: sql)
+                if let savedQueryID, let id = selectedTab,
+                   let query = savedQueries.items.first(where: { $0.id == savedQueryID }) {
+                    queryModels[id]?.savedQuery = query
+                }
+            }
+        }
+        if let index = saved.selectedTab, tabs.indices.contains(index) {
+            selectedTab = tabs[index].id
         }
     }
 
