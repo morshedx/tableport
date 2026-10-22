@@ -833,88 +833,118 @@ enum SidebarActions {
 enum DangerConfirm {
     static func run(title: String, typeToConfirm: String?, options: [String], button: String,
                     sql: @escaping ([Bool]) -> String, confirmed: @escaping (String, [Bool]) -> Void) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = "This can't be undone. TablePort will run:"
-        alert.alertStyle = .critical
-        alert.addButton(withTitle: "Cancel")
-        let confirm = alert.addButton(withTitle: button)
-        confirm.hasDestructiveAction = true
-
-        let form = DangerForm(options: options, typeToConfirm: typeToConfirm, sql: sql, confirm: confirm)
-        alert.accessoryView = form.view
-        if let field = form.nameField { alert.window.initialFirstResponder = field }
-        let finish = { (response: NSApplication.ModalResponse) in
-            // The form lives until the answer: it updates the SQL and the button.
-            if response == .alertSecondButtonReturn { confirmed(form.currentSQL, form.options) }
+        let parent = NSApp.keyWindow ?? NSApp.mainWindow
+        let panel = NSPanel(contentRect: .zero, styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        panel.titlebarAppearsTransparent = true
+        let close = { [weak panel, weak parent] (response: NSApplication.ModalResponse) in
+            guard let panel else { return }
+            if let parent { parent.endSheet(panel, returnCode: response) } else { NSApp.stopModal(withCode: response) }
         }
-        if let window = NSApp.keyWindow ?? NSApp.mainWindow {
-            alert.beginSheetModal(for: window, completionHandler: finish)
+        let sheet = DangerSheet(title: title, typeToConfirm: typeToConfirm, options: options, button: button, sql: sql) { result in
+            close(result == nil ? .cancel : .OK)
+            if let (statements, chosen) = result { confirmed(statements, chosen) }
+        }
+        let host = NSHostingController(rootView: sheet)
+        host.sizingOptions = .preferredContentSize
+        // A sheet shows no title bar; no room is kept for one.
+        host.safeAreaRegions = []
+        panel.contentViewController = host
+        panel.setContentSize(host.view.fittingSize)
+        if let parent {
+            parent.beginSheet(panel)
         } else {
-            finish(alert.runModal())
+            NSApp.runModal(for: panel)
+            panel.close()
         }
     }
 }
 
-@MainActor
-private final class DangerForm: NSObject, NSTextFieldDelegate {
-    let view: NSView
-    private(set) var nameField: NSTextField?
-    private let checkboxes: [NSButton]
-    private let sqlLabel = NSTextField(wrappingLabelWithString: "")
-    private let sql: ([Bool]) -> String
-    private let typeToConfirm: String?
-    private let confirm: NSButton
+/// The confirmation itself: a header with the warning beside the title,
+/// the SQL, the options, and on production the name to type.
+private struct DangerSheet: View {
+    let title: String
+    let typeToConfirm: String?
+    let options: [String]
+    let button: String
+    let sql: ([Bool]) -> String
+    /// The SQL and options on confirm; nil on Cancel.
+    let finish: (((String, [Bool]))?) -> Void
 
-    init(options: [String], typeToConfirm: String?, sql: @escaping ([Bool]) -> String, confirm: NSButton) {
-        self.sql = sql
+    @State private var chosen: [Bool]
+    @State private var typed = ""
+
+    init(title: String, typeToConfirm: String?, options: [String], button: String,
+         sql: @escaping ([Bool]) -> String, finish: @escaping (((String, [Bool]))?) -> Void) {
+        self.title = title
         self.typeToConfirm = typeToConfirm
-        self.confirm = confirm
-        checkboxes = options.map { NSButton(checkboxWithTitle: $0, target: nil, action: nil) }
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        view = stack
-        super.init()
-
-        sqlLabel.font = AppFont.mono(size: 12)
-        sqlLabel.isSelectable = true
-        sqlLabel.preferredMaxLayoutWidth = 300
-        stack.addArrangedSubview(sqlLabel)
-        for checkbox in checkboxes {
-            checkbox.target = self
-            checkbox.action = #selector(update)
-            stack.addArrangedSubview(checkbox)
-        }
-        if let typeToConfirm {
-            let hint = NSTextField(wrappingLabelWithString: "This is a production connection. Type \(typeToConfirm) to confirm.")
-            hint.font = .systemFont(ofSize: 11)
-            hint.textColor = .secondaryLabelColor
-            hint.preferredMaxLayoutWidth = 300
-            let field = NSTextField()
-            field.placeholderString = typeToConfirm
-            field.delegate = self
-            field.translatesAutoresizingMaskIntoConstraints = false
-            field.widthAnchor.constraint(equalToConstant: 300).isActive = true
-            stack.addArrangedSubview(hint)
-            stack.addArrangedSubview(field)
-            nameField = field
-        }
-        stack.frame = NSRect(origin: .zero, size: stack.fittingSize)
-        update()
+        self.options = options
+        self.button = button
+        self.sql = sql
+        self.finish = finish
+        _chosen = State(initialValue: options.map { _ in false })
     }
 
-    var options: [Bool] { checkboxes.map { $0.state == .on } }
-    var currentSQL: String { sql(options) }
+    private static let maxSQLHeight: CGFloat = 220
 
-    @objc private func update() {
-        sqlLabel.attributedStringValue = SQLSyntax.highlighted(currentSQL, font: AppFont.mono(size: 12))
-        confirm.isEnabled = typeToConfirm.map { nameField?.stringValue == $0 } ?? true
-        view.frame.size = view.fittingSize
+    /// The SQL's height when wrapped to `width`, up to the most shown
+    /// before it scrolls. Monospaced, so lines wrap at a fixed count.
+    private static func height(of sql: String, width: CGFloat) -> CGFloat {
+        let font = AppFont.mono(size: 12)
+        let characterWidth = ("M" as NSString).size(withAttributes: [.font: font]).width
+        let perLine = max(1, Int(width / max(characterWidth, 1)))
+        let lines = sql.split(separator: "\n", omittingEmptySubsequences: false)
+            .reduce(0) { $0 + max(1, ($1.count + perLine - 1) / perLine) }
+        let lineHeight = ceil(font.ascender - font.descender + font.leading)
+        return min(CGFloat(lines) * lineHeight + 16, maxSQLHeight)
     }
 
-    func controlTextDidChange(_ notification: Notification) {
-        update()
+    var body: some View {
+        let statements = sql(chosen)
+        // Long SQL (a SQLite rebuild repeats the whole table) gets more width, then scrolls.
+        let width: CGFloat = statements.split(separator: "\n").count > 6 ? 460 : 320
+        let code = Text(SQLSyntax.highlighted(statements))
+            .font(AppFont.monoFont(size: 12))
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(nsImage: NSImage(named: NSImage.cautionName) ?? NSImage())
+                    .resizable()
+                    .frame(width: 40, height: 40)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(.system(size: 13, weight: .semibold))
+                    Text("This can't be undone. TablePort will run:")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            ScrollView { code }
+                .frame(height: Self.height(of: statements, width: width - 40 - 16))
+                .background(Color(nsColor: .quaternarySystemFill), in: RoundedRectangle(cornerRadius: 6))
+            ForEach(options.indices, id: \.self) { index in
+                Toggle(options[index], isOn: $chosen[index])
+            }
+            if let typeToConfirm {
+                Text("This is a production connection. Type \(typeToConfirm) to confirm.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                TextField(typeToConfirm, text: $typed)
+                    .textFieldStyle(.roundedBorder)
+            }
+            HStack {
+                Spacer()
+                // Return cancels, as in a stock critical alert.
+                Button("Cancel") { finish(nil) }
+                    .keyboardShortcut(.defaultAction)
+                Button(button, role: .destructive) { finish((statements, chosen)) }
+                    .foregroundStyle(Theme.danger)
+                    .disabled(typeToConfirm.map { typed != $0 } ?? false)
+            }
+        }
+        .padding(20)
+        .frame(width: width)
     }
 }
