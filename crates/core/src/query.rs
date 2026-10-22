@@ -45,6 +45,9 @@ impl DatabaseSession {
         if let Some(link) = self.sqlite() {
             return on_runtime(async move { link.run_query(sql, max_rows).await }).await;
         }
+        if let Some(link) = self.mysql() {
+            return on_runtime(async move { link.run_query(sql, max_rows).await }).await;
+        }
         let client = self.client()?;
         let endpoint = self.settings().endpoint();
         on_runtime(async move {
@@ -124,6 +127,9 @@ impl DatabaseSession {
         if let Some(link) = self.sqlite() {
             link.interrupt();
             return Ok(());
+        }
+        if let Some(link) = self.mysql() {
+            return on_runtime(async move { link.cancel().await }).await;
         }
         let token = self.client()?.cancel_token();
         let tls = self.tls();

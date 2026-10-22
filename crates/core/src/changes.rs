@@ -74,6 +74,9 @@ pub fn insert_sql(row: &NewRow, relation: &Relation, columns: &[Column], engine:
         })
         .collect();
     if set.is_empty() {
+        if engine == Engine::Mysql {
+            return Ok(format!("INSERT INTO {} () VALUES ()", relation.quoted_name()));
+        }
         return Ok(format!("INSERT INTO {} DEFAULT VALUES", relation.quoted_name()));
     }
     let names = set.iter().map(|column| quote_identifier(&column.name)).collect::<Vec<_>>().join(", ");
@@ -156,6 +159,9 @@ impl DatabaseSession {
         }
         let checked = changes.updates.len() + changes.deletes.len();
         if let Some(link) = self.sqlite() {
+            return crate::on_runtime(async move { link.apply_checked(statements, checked).await }).await;
+        }
+        if let Some(link) = self.mysql() {
             return crate::on_runtime(async move { link.apply_checked(statements, checked).await }).await;
         }
         self.execute(do_block(&statements, checked)?).await

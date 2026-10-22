@@ -163,6 +163,40 @@ impl MysqlLink {
         conn.query_drop(sql).await.map_err(|error| self.fail(error))
     }
 
+    /// Runs `statements` in one transaction: all or none. Each of the first
+    /// `checked` (updates and deletes by primary key) must find exactly one
+    /// row; if one finds none, someone else changed or deleted it, and
+    /// nothing is saved.
+    pub(crate) async fn apply_checked(&self, statements: Vec<String>, checked: usize) -> Result<(), DatabaseError> {
+        let mut conn = self.internal().await?;
+        conn.query_drop("START TRANSACTION").await.map_err(|error| self.fail(error))?;
+        let mut outcome = Ok(());
+        for (index, statement) in statements.iter().enumerate() {
+            match conn.query_iter(statement.as_str()).await {
+                Ok(result) => {
+                    let changed = result.affected_rows();
+                    if let Err(error) = result.drop_result().await {
+                        outcome = Err(self.fail(error));
+                        break;
+                    }
+                    if index < checked && changed == 0 {
+                        outcome = Err(DatabaseError::new(
+                            "A row was changed or deleted by someone else. Nothing was saved; refresh and try again.",
+                        ));
+                        break;
+                    }
+                }
+                Err(error) => {
+                    outcome = Err(self.fail(error));
+                    break;
+                }
+            }
+        }
+        let end = if outcome.is_ok() { "COMMIT" } else { "ROLLBACK" };
+        let ended = conn.query_drop(end).await.map_err(|error| self.fail(error));
+        outcome.and(ended)
+    }
+
     pub(crate) async fn ping(&self) -> Result<(), DatabaseError> {
         let mut conn = self.internal().await?;
         match tokio::time::timeout(Duration::from_secs(5), conn.ping()).await {
@@ -187,13 +221,112 @@ impl MysqlLink {
         self.closed.store(true, Ordering::Relaxed);
     }
 
-    #[allow(dead_code)]
-    pub(crate) async fn editor(&self) -> Result<tokio::sync::MutexGuard<'_, Conn>, DatabaseError> {
+    /// The query editor's Run, on the editor connection in the server's own
+    /// mode. The SQL goes to the server whole, which splits it into
+    /// statements itself, so MySQL's own quoting rules apply. It runs as one
+    /// transaction unless it manages its own; DDL commits on its own, as
+    /// MySQL always does. Keeps the first `max_rows` rows of each result.
+    pub(crate) async fn run_query(&self, sql: String, max_rows: u64) -> Result<crate::query::QueryResult, DatabaseError> {
+        use crate::query::{cut, QueryResult, ResultSet};
         if self.is_closed() {
             return Err(DatabaseError::new(format!("The connection to {} is closed.", self.endpoint)));
         }
-        Ok(self.editor.lock().await)
+        let verbs = crate::sql_text::statement_verbs(&sql);
+        let manages_transaction = verbs
+            .iter()
+            .any(|verb| matches!(verb.as_str(), "BEGIN" | "START" | "COMMIT" | "ROLLBACK" | "SAVEPOINT" | "RELEASE" | "XA" | "SET"));
+        let mut conn = self.editor.lock().await;
+        let start = std::time::Instant::now();
+        if !manages_transaction {
+            conn.query_drop("START TRANSACTION").await.map_err(|error| self.fail(error))?;
+        }
+        let mut result_sets = Vec::new();
+        let mut statement_counts = Vec::new();
+        let outcome: Result<(), mysql_async::Error> = async {
+            let mut result = conn.query_iter(sql).await?;
+            while !result.is_empty() {
+                let columns = result.columns().filter(|columns| !columns.is_empty());
+                let Some(columns) = columns else {
+                    statement_counts.push(result.affected_rows());
+                    // Moves on to the next statement's result.
+                    result.collect::<mysql_async::Row>().await?;
+                    continue;
+                };
+                let binary: Vec<bool> = columns.iter().map(is_binary_column).collect();
+                let mut kept = Vec::new();
+                let mut total = 0u64;
+                while let Some(row) = result.next().await? {
+                    if total < max_rows {
+                        let values = row
+                            .unwrap()
+                            .into_iter()
+                            .zip(&binary)
+                            .map(|(value, binary)| match value {
+                                Value::Bytes(bytes) if *binary => Some(cut(&hex(&bytes))),
+                                value => text(value).as_deref().map(cut),
+                            })
+                            .collect();
+                        kept.push(values);
+                    }
+                    total += 1;
+                }
+                statement_counts.push(total);
+                result_sets.push(ResultSet {
+                    columns: columns.iter().map(|column| column.name_str().into_owned()).collect(),
+                    rows: kept,
+                    total_rows: total,
+                    numeric_columns: columns.iter().map(|column| is_numeric_column(column.column_type())).collect(),
+                });
+            }
+            // A later statement's error arrives only when its result is read.
+            result.drop_result().await?;
+            Ok(())
+        }
+        .await;
+        if !manages_transaction {
+            let end = if outcome.is_ok() { "COMMIT" } else { "ROLLBACK" };
+            let ended = conn.query_drop(end).await;
+            if outcome.is_ok() {
+                ended.map_err(|error| self.fail(error))?;
+            }
+        }
+        outcome.map_err(|error| self.fail(error))?;
+        Ok(QueryResult {
+            result_sets,
+            statement_counts,
+            statement_verbs: verbs,
+            elapsed_ms: start.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+        })
     }
+}
+
+/// Bytes of BLOB, BINARY and VARBINARY results (the binary character set).
+fn is_binary_column(column: &mysql_async::Column) -> bool {
+    use mysql_async::consts::ColumnType::*;
+    column.character_set() == 63
+        && matches!(
+            column.column_type(),
+            MYSQL_TYPE_TINY_BLOB | MYSQL_TYPE_MEDIUM_BLOB | MYSQL_TYPE_LONG_BLOB | MYSQL_TYPE_BLOB | MYSQL_TYPE_STRING | MYSQL_TYPE_VAR_STRING | MYSQL_TYPE_VARCHAR
+        )
+}
+
+fn is_numeric_column(column_type: mysql_async::consts::ColumnType) -> bool {
+    use mysql_async::consts::ColumnType::*;
+    matches!(
+        column_type,
+        MYSQL_TYPE_TINY | MYSQL_TYPE_SHORT | MYSQL_TYPE_LONG | MYSQL_TYPE_LONGLONG | MYSQL_TYPE_INT24 | MYSQL_TYPE_DECIMAL
+            | MYSQL_TYPE_NEWDECIMAL | MYSQL_TYPE_FLOAT | MYSQL_TYPE_DOUBLE
+    )
+}
+
+/// `\x…`, as the grid shows bytes.
+fn hex(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(2 + bytes.len() * 2);
+    text.push_str("\\x");
+    for byte in bytes {
+        text.push_str(&format!("{byte:02x}"));
+    }
+    text
 }
 
 /// A value of the text protocol as text: every value arrives as bytes.

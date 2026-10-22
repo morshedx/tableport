@@ -158,3 +158,111 @@ async fn pages_filters_and_counts() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn commits_edits_inserts_and_deletes_all_or_nothing() {
+    use std::collections::HashMap;
+    use tableport_core::{CellDraft, NewRow, PendingChanges, RowUpdate};
+    on_each_server("commit", |session, database| async move {
+        let relation = users(&database);
+        let columns = session.columns(relation.clone()).await.unwrap();
+        let key = vec!["id".to_string()];
+        let value = |text: &str| CellDraft::Value { text: text.into() };
+        let names = |session: Arc<DatabaseSession>, relation: Relation| async move {
+            let result = session.run_query(format!("SELECT name FROM `{}`.`users` ORDER BY id", relation.schema), 100).await.unwrap();
+            result.result_sets[0].rows.iter().map(|row| row[0].clone()).collect::<Vec<_>>()
+        };
+
+        // An update that sets a value to itself still counts as found.
+        let same = PendingChanges {
+            updates: vec![RowUpdate { key: vec!["1".into()], values: HashMap::from([("name".into(), value("Ada"))]) }],
+            ..Default::default()
+        };
+        session.commit(same, relation.clone(), columns.clone(), key.clone()).await.unwrap();
+
+        let changes = PendingChanges {
+            inserts: vec![NewRow { values: HashMap::from([("name".into(), value("it's \\ new"))]) }, NewRow::default()],
+            updates: vec![RowUpdate { key: vec!["2".into()], values: HashMap::from([("name".into(), value("Grace H."))]) }],
+            deletes: vec![vec!["3".into()]],
+        };
+        session.commit(changes, relation.clone(), columns.clone(), key.clone()).await.unwrap();
+        let after = names(session.clone(), relation.clone()).await;
+        assert_eq!(
+            after,
+            [Some("Ada".into()), Some("Grace H.".into()), Some("100% sure".into()), Some("back\\slash".into()), Some("it's \\ new".into()), None]
+        );
+
+        // One missing row: nothing is saved.
+        let stale = PendingChanges {
+            updates: vec![
+                RowUpdate { key: vec!["1".into()], values: HashMap::from([("name".into(), value("changed"))]) },
+                RowUpdate { key: vec!["99".into()], values: HashMap::from([("name".into(), value("gone"))]) },
+            ],
+            ..Default::default()
+        };
+        let error = session.commit(stale, relation.clone(), columns.clone(), key.clone()).await.unwrap_err();
+        assert!(error.message().contains("someone else"), "{error}");
+        assert_eq!(names(session.clone(), relation.clone()).await, after);
+
+        // A server error rolls back the statements before it.
+        let broken = PendingChanges {
+            updates: vec![
+                RowUpdate { key: vec!["1".into()], values: HashMap::from([("name".into(), value("changed"))]) },
+                RowUpdate { key: vec!["2".into()], values: HashMap::from([("team_id".into(), value("42"))]) },
+            ],
+            ..Default::default()
+        };
+        assert!(session.commit(broken, relation.clone(), columns, key).await.is_err());
+        assert_eq!(names(session, relation).await, after);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn runs_queries_in_the_servers_own_mode() {
+    on_each_server("query", |session, database| async move {
+        let users = format!("`{database}`.users");
+        // MySQL's quoting in the editor: "…" is a string, \' escapes a quote.
+        let result = session
+            .run_query(format!("SELECT \"double\", 'it\\'s', id, score, avatar FROM {users} WHERE id = 1; SELECT 1 + 1"), 100)
+            .await
+            .unwrap();
+        assert_eq!(result.result_sets.len(), 2);
+        let first = &result.result_sets[0];
+        assert_eq!(first.rows[0][0].as_deref(), Some("double"));
+        assert_eq!(first.rows[0][1].as_deref(), Some("it's"));
+        assert_eq!(first.rows[0][4].as_deref(), Some("\\xcafe"));
+        assert_eq!(first.numeric_columns, [false, false, true, true, false]);
+        assert_eq!(result.result_sets[1].rows[0][0].as_deref(), Some("2"));
+
+        // Counts for statements without rows, and the row limit.
+        let result = session.run_query(format!("UPDATE {users} SET score = 1 WHERE score IS NULL; SELECT name FROM {users}"), 2).await.unwrap();
+        assert_eq!(result.statement_counts, [2, 5]);
+        assert_eq!(result.result_sets[0].rows.len(), 2);
+        assert_eq!(result.result_sets[0].total_rows, 5);
+        assert_eq!(result.statement_verbs, ["UPDATE", "SELECT"]);
+
+        // A failing statement rolls back the ones before it.
+        let error = session.run_query(format!("UPDATE {users} SET name = 'x'; SELECT * FROM nope"), 10).await.unwrap_err();
+        assert!(error.message().contains("nope"), "{error}");
+        let names = session.run_query(format!("SELECT count(*) FROM {users} WHERE name = 'x'"), 1).await.unwrap();
+        assert_eq!(names.result_sets[0].rows[0][0].as_deref(), Some("0"));
+
+        // Cancel stops a long statement; the session keeps working.
+        let running = {
+            let session = session.clone();
+            tokio::spawn(async move { session.run_query("SELECT SLEEP(30)".into(), 1).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        session.cancel_query().await.unwrap();
+        let started = std::time::Instant::now();
+        let outcome = running.await.unwrap();
+        assert!(started.elapsed().as_secs() < 5, "cancelled quickly");
+        // MySQL ends SLEEP with 1 instead of an error; MariaDB with an error.
+        if let Ok(result) = outcome {
+            assert_eq!(result.result_sets[0].rows[0][0].as_deref(), Some("1"));
+        }
+        assert!(session.run_query("SELECT 1".into(), 1).await.is_ok());
+    })
+    .await;
+}
