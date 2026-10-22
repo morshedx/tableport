@@ -2,7 +2,7 @@ mod common;
 
 use std::collections::HashMap;
 
-use tableport_core::{changes_sql, insert_sql, CellDraft, Column, NewRow, PendingChanges, Relation, RelationKind, RowUpdate};
+use tableport_core::{changes_sql, insert_sql, CellDraft, Column, Engine, NewRow, PendingChanges, Relation, RelationKind, RowUpdate};
 use common::{enabled, with_schema};
 
 fn value(text: &str) -> CellDraft {
@@ -20,9 +20,9 @@ fn insert_sql_leaves_unset_columns_to_default() {
         .iter()
         .map(|name| Column::plain(*name, "text"))
         .collect();
-    let sql = insert_sql(&row(&[("name", value("O'Brien")), ("note", CellDraft::Null)]), &relation, &columns).unwrap();
+    let sql = insert_sql(&row(&[("name", value("O'Brien")), ("note", CellDraft::Null)]), &relation, &columns, Engine::Postgres).unwrap();
     assert_eq!(sql, r#"INSERT INTO "public"."users" ("name", "note") VALUES ('O''Brien', NULL)"#);
-    let empty = insert_sql(&NewRow::default(), &relation, &columns).unwrap();
+    let empty = insert_sql(&NewRow::default(), &relation, &columns, Engine::Postgres).unwrap();
     assert_eq!(empty, r#"INSERT INTO "public"."users" DEFAULT VALUES"#);
 }
 
@@ -185,7 +185,7 @@ fn changes_sql_orders_updates_deletes_inserts() {
         updates: vec![RowUpdate { key: key(&["1"]), values: [("name".to_string(), value("x"))].into() }],
         deletes: vec![key(&["2"])],
     };
-    let statements = changes_sql(&changes, &relation, &columns, &["id".to_string()]).unwrap();
+    let statements = changes_sql(&changes, &relation, &columns, &["id".to_string()], Engine::Postgres).unwrap();
     assert_eq!(
         statements,
         [

@@ -334,7 +334,8 @@ final class TableTabModel: ObservableObject {
 
     /// The statements Commit will run, for the review sheet.
     func reviewStatements() -> Result<[String], Error> {
-        Result { try changesSql(changes: pendingChanges, relation: relation, columns: columns, primaryKey: primaryKey) }
+        Result { try changesSql(changes: pendingChanges, relation: relation, columns: columns, primaryKey: primaryKey,
+                              engine: session.engine()) }
     }
 
     /// Applies all changes in one transaction. Production connections ask first.

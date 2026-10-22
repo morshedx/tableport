@@ -6619,14 +6619,15 @@ fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: In
  * The statements for all pending changes, as the user reviews them:
  * updates, then deletes, then inserts.
  */
-public func changesSql(changes: PendingChanges, relation: Relation, columns: [Column], primaryKey: [String])throws  -> [String]  {
+public func changesSql(changes: PendingChanges, relation: Relation, columns: [Column], primaryKey: [String], engine: Engine)throws  -> [String]  {
     return try  FfiConverterSequenceString.lift(try rustCallWithError(FfiConverterTypeDatabaseError_lift) {
         uniffiCallStatus in
     uniffi_tableport_core_fn_func_changes_sql(
         FfiConverterTypePendingChanges_lower(changes),
         FfiConverterTypeRelation_lower(relation),
         FfiConverterSequenceTypeColumn.lower(columns),
-        FfiConverterSequenceString.lower(primaryKey),uniffiCallStatus
+        FfiConverterSequenceString.lower(primaryKey),
+        FfiConverterTypeEngine_lower(engine),uniffiCallStatus
     )
 })
 }
@@ -6634,13 +6635,14 @@ public func changesSql(changes: PendingChanges, relation: Relation, columns: [Co
  * `INSERT` for one new row. Values are untyped literals, so PostgreSQL reads
  * each as its column's type. `columns` gives the column order.
  */
-public func insertSql(row: NewRow, relation: Relation, columns: [Column])throws  -> String  {
+public func insertSql(row: NewRow, relation: Relation, columns: [Column], engine: Engine)throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeDatabaseError_lift) {
         uniffiCallStatus in
     uniffi_tableport_core_fn_func_insert_sql(
         FfiConverterTypeNewRow_lower(row),
         FfiConverterTypeRelation_lower(relation),
-        FfiConverterSequenceTypeColumn.lower(columns),uniffiCallStatus
+        FfiConverterSequenceTypeColumn.lower(columns),
+        FfiConverterTypeEngine_lower(engine),uniffiCallStatus
     )
 })
 }
@@ -6914,10 +6916,10 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_tableport_core_checksum_func_changes_sql() != 57243) {
+    if (uniffi_tableport_core_checksum_func_changes_sql() != 51614) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tableport_core_checksum_func_insert_sql() != 35229) {
+    if (uniffi_tableport_core_checksum_func_insert_sql() != 39327) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_func_rank_names() != 44927) {

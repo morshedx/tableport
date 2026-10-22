@@ -87,6 +87,27 @@ impl SqliteLink {
         .await
     }
 
+    /// Runs `statements` in one transaction: all or none. Each of the first
+    /// `checked` (updates and deletes by primary key) must change exactly
+    /// one row; if one finds none, someone else changed or deleted it, and
+    /// nothing is saved.
+    pub(crate) async fn apply_checked(&self, statements: Vec<String>, checked: usize) -> Result<(), DatabaseError> {
+        self.with(move |connection| {
+            let transaction = connection.unchecked_transaction().map_err(|error| sqlite_error(&error))?;
+            for (index, statement) in statements.iter().enumerate() {
+                let changed = transaction.execute(statement, []).map_err(|error| sqlite_error(&error))?;
+                if index < checked && changed == 0 {
+                    // Dropping the transaction rolls it back.
+                    return Err(DatabaseError::new(
+                        "A row was changed or deleted by someone else. Nothing was saved; refresh and try again.",
+                    ));
+                }
+            }
+            transaction.commit().map_err(|error| sqlite_error(&error))
+        })
+        .await
+    }
+
     /// Runs statements separated by `;`, discarding rows.
     pub(crate) async fn execute(&self, sql: String) -> Result<(), DatabaseError> {
         self.with(move |connection| connection.execute_batch(&sql).map_err(|error| sqlite_error(&error))).await

@@ -138,3 +138,53 @@ async fn pages_filters_and_counts() {
     }
     assert_eq!(session.estimated_row_count(users()).await.unwrap(), Some(4));
 }
+
+#[tokio::test]
+async fn commits_edits_inserts_and_deletes_all_or_nothing() {
+    use std::collections::HashMap;
+    use tableport_core::{CellDraft, NewRow, PendingChanges, RowUpdate, SqlFunction};
+    let file = TempDatabase::new("commit", SHOP);
+    let session = DatabaseSession::connect(file.settings(false)).await.unwrap();
+    let columns = session.columns(users()).await.unwrap();
+    let key = vec!["id".to_string()];
+    let value = |text: &str| CellDraft::Value { text: text.into() };
+
+    let changes = PendingChanges {
+        updates: vec![RowUpdate { key: vec!["1".into()], values: HashMap::from([("name".into(), value("Ada L.")), ("score".into(), value("10"))]) }],
+        deletes: vec![vec!["3".into()]],
+        inserts: vec![NewRow { values: HashMap::from([
+            ("name".into(), value("Linus")),
+            ("joined".into(), CellDraft::Function { function: SqlFunction::CurrentDate }),
+            // SQLite has no DEFAULT keyword: the column is left out.
+            ("score".into(), CellDraft::Default),
+        ]) }],
+    };
+    session.commit(changes, users(), columns.clone(), key.clone()).await.unwrap();
+    let rows = session.rows(users(), columns.clone(), vec![], None, key.clone(), 0, 10).await.unwrap().rows;
+    let names: Vec<_> = rows.iter().map(|row| row[1].clone().unwrap_or_default()).collect();
+    assert_eq!(names, ["Ada L.", "Grace", "100% sure", "Linus"]);
+    assert_eq!(rows[0][2].as_deref(), Some("10.0"), "REAL affinity stores the typed text as a number");
+    assert!(rows[3][3].is_some(), "CURRENT_DATE filled the new row's date");
+
+    // A row deleted meanwhile: nothing is saved, the update before it included.
+    session.execute("DELETE FROM users WHERE id = 2".into()).await.unwrap();
+    let changes = PendingChanges {
+        updates: vec![
+            RowUpdate { key: vec!["1".into()], values: HashMap::from([("name".into(), value("changed"))]) },
+            RowUpdate { key: vec!["2".into()], values: HashMap::from([("name".into(), value("gone"))]) },
+        ],
+        ..Default::default()
+    };
+    let error = session.commit(changes, users(), columns.clone(), key.clone()).await.unwrap_err();
+    assert!(error.message().contains("someone else"), "{error}");
+    let first = session.rows(users(), columns.clone(), vec![], None, key.clone(), 0, 1).await.unwrap().rows;
+    assert_eq!(first[0][1].as_deref(), Some("Ada L."));
+
+    // Setting an existing value back to DEFAULT is refused, with a reason.
+    let changes = PendingChanges {
+        updates: vec![RowUpdate { key: vec!["1".into()], values: HashMap::from([("score".into(), CellDraft::Default)]) }],
+        ..Default::default()
+    };
+    let error = session.commit(changes, users(), columns, key).await.unwrap_err();
+    assert!(error.message().contains("default"), "{error}");
+}

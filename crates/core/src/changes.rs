@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::rows::{quote_identifier, quote_literal};
-use crate::{Column, DatabaseError, DatabaseSession, Relation};
+use crate::{Column, DatabaseError, DatabaseSession, Engine, Relation};
 
 /// A value for a cell. For a new row, a column with no draft gets its DEFAULT.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Enum)]
@@ -25,11 +25,12 @@ pub enum SqlFunction {
 }
 
 impl SqlFunction {
-    fn sql(self) -> &'static str {
-        match self {
-            Self::Now => "now()",
-            Self::CurrentDate => "CURRENT_DATE",
-            Self::CurrentTime => "CURRENT_TIME",
+    fn sql(self, engine: Engine) -> &'static str {
+        match (self, engine) {
+            (Self::Now, Engine::Postgres) => "now()",
+            (Self::Now, Engine::Sqlite) => "CURRENT_TIMESTAMP",
+            (Self::CurrentDate, _) => "CURRENT_DATE",
+            (Self::CurrentTime, _) => "CURRENT_TIME",
         }
     }
 }
@@ -62,15 +63,23 @@ pub struct PendingChanges {
 /// `INSERT` for one new row. Values are untyped literals, so PostgreSQL reads
 /// each as its column's type. `columns` gives the column order.
 #[uniffi::export]
-pub fn insert_sql(row: &NewRow, relation: &Relation, columns: &[Column]) -> Result<String, DatabaseError> {
-    let set: Vec<&Column> = columns.iter().filter(|column| row.values.contains_key(&column.name)).collect();
+pub fn insert_sql(row: &NewRow, relation: &Relation, columns: &[Column], engine: Engine) -> Result<String, DatabaseError> {
+    // SQLite has no DEFAULT in VALUES: a column left out gets its default.
+    let set: Vec<&Column> = columns
+        .iter()
+        .filter(|column| match row.values.get(&column.name) {
+            Some(CellDraft::Default) => engine != Engine::Sqlite,
+            Some(_) => true,
+            None => false,
+        })
+        .collect();
     if set.is_empty() {
         return Ok(format!("INSERT INTO {} DEFAULT VALUES", relation.quoted_name()));
     }
     let names = set.iter().map(|column| quote_identifier(&column.name)).collect::<Vec<_>>().join(", ");
     let values = set
         .iter()
-        .map(|column| draft_sql(row.values.get(&column.name)))
+        .map(|column| draft_sql(row.values.get(&column.name), engine))
         .collect::<Result<Vec<_>, _>>()?
         .join(", ");
     Ok(format!("INSERT INTO {} ({names}) VALUES ({values})", relation.quoted_name()))
@@ -84,6 +93,7 @@ pub fn changes_sql(
     relation: &Relation,
     columns: &[Column],
     primary_key: &[String],
+    engine: Engine,
 ) -> Result<Vec<String>, DatabaseError> {
     let mut statements = Vec::new();
     for update in &changes.updates {
@@ -93,7 +103,10 @@ pub fn changes_sql(
         }
         let assignments = set
             .iter()
-            .map(|column| Ok(format!("{} = {}", quote_identifier(&column.name), draft_sql(update.values.get(&column.name))?)))
+            .map(|column| {
+                let value = draft_sql(update.values.get(&column.name), engine)?;
+                Ok(format!("{} = {value}", quote_identifier(&column.name)))
+            })
             .collect::<Result<Vec<_>, DatabaseError>>()?
             .join(", ");
         statements.push(format!(
@@ -106,7 +119,7 @@ pub fn changes_sql(
         statements.push(format!("DELETE FROM {} WHERE {}", relation.quoted_name(), key_condition(primary_key, key)?));
     }
     for row in &changes.inserts {
-        statements.push(insert_sql(row, relation, columns)?);
+        statements.push(insert_sql(row, relation, columns, engine)?);
     }
     Ok(statements)
 }
@@ -136,11 +149,16 @@ impl DatabaseSession {
         if (!changes.updates.is_empty() || !changes.deletes.is_empty()) && primary_key.is_empty() {
             return Err(DatabaseError::new("Rows of a table without a primary key can't be changed."));
         }
-        let statements = changes_sql(&changes, &relation, &columns, &primary_key)?;
+        let engine = self.engine();
+        let statements = changes_sql(&changes, &relation, &columns, &primary_key, engine)?;
         if statements.is_empty() {
             return Ok(());
         }
-        self.execute(do_block(&statements, changes.updates.len() + changes.deletes.len())?).await
+        let checked = changes.updates.len() + changes.deletes.len();
+        if let Some(link) = self.sqlite() {
+            return crate::on_runtime(async move { link.apply_checked(statements, checked).await }).await;
+        }
+        self.execute(do_block(&statements, checked)?).await
     }
 }
 
@@ -162,12 +180,15 @@ fn do_block(statements: &[String], checked: usize) -> Result<String, DatabaseErr
     Ok(format!("DO ${tag}$\n{body}\n${tag}$"))
 }
 
-fn draft_sql(draft: Option<&CellDraft>) -> Result<String, DatabaseError> {
+fn draft_sql(draft: Option<&CellDraft>, engine: Engine) -> Result<String, DatabaseError> {
     match draft {
         Some(CellDraft::Value { text }) => quote_literal(text),
         Some(CellDraft::Null) | None => Ok("NULL".to_string()),
+        Some(CellDraft::Default) if engine == Engine::Sqlite => {
+            Err(DatabaseError::new("SQLite can't set an existing value back to the column's default. Type the value instead."))
+        }
         Some(CellDraft::Default) => Ok("DEFAULT".to_string()),
-        Some(CellDraft::Function { function }) => Ok(function.sql().to_string()),
+        Some(CellDraft::Function { function }) => Ok(function.sql(engine).to_string()),
     }
 }
 

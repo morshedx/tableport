@@ -547,12 +547,12 @@ RustBuffer uniffi_tableport_core_fn_method_localstore_saved_queries(uint64_t ptr
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_CHANGES_SQL
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_CHANGES_SQL
-RustBuffer uniffi_tableport_core_fn_func_changes_sql(RustBuffer changes, RustBuffer relation, RustBuffer columns, RustBuffer primary_key, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_tableport_core_fn_func_changes_sql(RustBuffer changes, RustBuffer relation, RustBuffer columns, RustBuffer primary_key, RustBuffer engine, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_INSERT_SQL
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_INSERT_SQL
-RustBuffer uniffi_tableport_core_fn_func_insert_sql(RustBuffer row, RustBuffer relation, RustBuffer columns, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_tableport_core_fn_func_insert_sql(RustBuffer row, RustBuffer relation, RustBuffer columns, RustBuffer engine, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_RANK_NAMES
