@@ -14,20 +14,20 @@ CARGO ?= $(HOME)/.cargo/bin/cargo
 
 all: app
 
-# The Rust core (core/) as a static library, plus its Swift bindings, which
-# UniFFI generates from the library: Sources/TablePortCore/tableport_core.swift
-# and the C header in Sources/tableport_coreFFI.
+# The Rust core (crates/core) as a static library, plus its Swift bindings,
+# which UniFFI generates from the library: Sources/TablePortCore/tableport_core.swift
+# and the C header in Sources/tableport_coreFFI. The workspace builds into target/.
 core:
-	cd core && $(CARGO) build --release
-	cd core && $(CARGO) run --release --quiet --bin uniffi-bindgen -- generate \
+	$(CARGO) build --release -p tableport-core
+	$(CARGO) run --release --quiet -p tableport-core --bin uniffi-bindgen -- generate \
 		--library target/release/libtableport_core.dylib --language swift --out-dir target/swift
-	cp core/target/swift/tableport_core.swift Sources/TablePortCore/tableport_core.swift
-	cp core/target/swift/tableport_coreFFI.h Sources/tableport_coreFFI/tableport_coreFFI.h
-	cp core/target/swift/tableport_coreFFI.modulemap Sources/tableport_coreFFI/module.modulemap
+	cp target/swift/tableport_core.swift Sources/TablePortCore/tableport_core.swift
+	cp target/swift/tableport_coreFFI.h Sources/tableport_coreFFI/tableport_coreFFI.h
+	cp target/swift/tableport_coreFFI.modulemap Sources/tableport_coreFFI/module.modulemap
 
 # Needs a local PostgreSQL server that trusts the current user.
 core-test:
-	cd core && TABLEPORT_TEST_PG=1 $(CARGO) test
+	TABLEPORT_TEST_PG=1 $(CARGO) test --workspace
 
 build: core
 	swift build -c $(CONFIG)
@@ -54,5 +54,5 @@ setup-dev-cert:
 
 clean:
 	swift package clean
-	cd core && $(CARGO) clean
+	$(CARGO) clean
 	rm -rf "$(APP_BUNDLE)"

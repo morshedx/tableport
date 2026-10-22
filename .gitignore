@@ -2,5 +2,5 @@
 .DS_Store
 *.xcodeproj
 .swiftpm/
-core/target/
+/target/
 local.mk

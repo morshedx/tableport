@@ -2,12 +2,12 @@
 import Foundation
 import PackageDescription
 
-// libtableport_core.a, built by `make core` in core/. Linked by its full path:
+// libtableport_core.a, built by `make core` in crates/core (into the workspace target/). Linked by its full path:
 // the same folder also holds the .dylib (read only by uniffi-bindgen), and
 // -ltableport_core would pick that instead.
 let coreLibrary = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()
-    .appendingPathComponent("core/target/release/libtableport_core.a")
+    .appendingPathComponent("target/release/libtableport_core.a")
     .path
 
 let package = Package(

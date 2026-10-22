@@ -33,10 +33,5 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 # SSH tunnel. ring instead of the default aws-lc-rs, which needs a C toolchain build.
 russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }  # reading the simple-query stream message by message
 
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-
 [dev-dependencies]
 futures = "0.3"  # catch_unwind, so a failed test still drops its schema

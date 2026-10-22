@@ -1,0 +1,11 @@
+# The Rust side of TablePort: one crate per part (see the plan "more databases,
+# teams and other platforms"). The Swift app stays at the repository root.
+[workspace]
+members = ["crates/core"]
+resolver = "2"
+
+# Profiles apply to the whole workspace, so they live here.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
