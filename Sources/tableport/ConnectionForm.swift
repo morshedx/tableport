@@ -309,15 +309,34 @@ struct ConnectionForm: View {
                               hint: "With the same login, still read-only. For many databases on one server.",
                               isOn: $aiAllDatabases, indent: true)
                 }
-                if aiAccess && engine == .mysql {
-                    Label("AI tools can read every database this login can read. To limit them, use a MySQL user with rights to fewer databases.",
-                          systemImage: "info.circle")
-                        .font(Theme.meta)
-                        .foregroundStyle(Theme.inkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            }
+            if engine == .mysql {
+                mysqlAccessWarning
             }
         }
+    }
+
+    /// A MySQL login reads every database it has rights to; TablePort can't
+    /// keep an AI tool to one, so the user must know before turning it on.
+    private var mysqlAccessWarning: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Theme.warning)
+                .font(.system(size: 15))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("AI tools can read every database this login can read")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.ink)
+                Text("MySQL has no way to keep a login to one database. To limit what AI tools see, connect with a MySQL user that has rights only to the databases you want to share.")
+                    .font(Theme.meta)
+                    .foregroundStyle(Theme.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: Theme.radiusItem))
+        .overlay(RoundedRectangle(cornerRadius: Theme.radiusItem).stroke(Theme.warning.opacity(0.35)))
     }
 
     private var header: some View {
