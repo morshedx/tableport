@@ -11,6 +11,13 @@ extension Updater {
 /// version's. Add the next version's entry before releasing it.
 enum ReleaseNotes {
     static let notes = VersionNotes([
+        "0.1.0-beta.4": [
+            "Autocomplete in the query editor: tables after FROM and JOIN, columns of the tables in the statement, alias. and CTE columns, keywords and functions. Letters in order match too: sl finds SELECT.",
+            "Settings › Editor › Keyword case: suggested keywords in uppercase (default), lowercase or as typed.",
+            "Quotes and brackets close themselves, with the cursor between them.",
+            "Selected SQL keeps its syntax colours on a light grey selection, and lines are a little taller.",
+            "A new query tab (⌘T) puts the cursor in the editor.",
+        ],
         "0.1.0-beta.3": [
             "Numbers are right-aligned in the data grid and in query results, as in TablePlus, so their digits line up.",
         ],

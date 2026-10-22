@@ -35,12 +35,14 @@ final class QueryTabModel: ObservableObject {
     static let rowLimits: [Int?] = [100, 500, 1000, 5000, 10000, nil]
     /// Shared by the query tabs of one connection window, newest first.
     let history: QueryHistory
+    let completion: CompletionSource
     private var runTask: Task<Void, Never>?
 
-    init(session: DatabaseSession, isProduction: Bool, history: QueryHistory) {
+    init(session: DatabaseSession, isProduction: Bool, history: QueryHistory, completion: CompletionSource) {
         self.session = session
         self.isProduction = isProduction
         self.history = history
+        self.completion = completion
     }
 
     /// Save Query (⌘S): updates the saved query this tab came from, or asks
@@ -291,7 +293,8 @@ struct QueryTabView: View {
     var body: some View {
         VSplitView {
             VStack(spacing: 0) {
-                SQLEditor(text: $model.sql, selection: $model.selection, errorRange: model.errorRange)
+                SQLEditor(text: $model.sql, selection: $model.selection, errorRange: model.errorRange,
+                          completion: model.completion)
                 editorBar
             }
             .frame(minHeight: 120, idealHeight: 260)

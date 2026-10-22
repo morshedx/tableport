@@ -600,6 +600,143 @@ fileprivate struct FfiConverterString: FfiConverter {
 
 
 /**
+ * The names one connection's editor can suggest.
+ */
+public protocol CompleterProtocol: AnyObject, Sendable {
+    
+    /**
+     * Suggestions at `cursor` (UTF-16 offset). `explicit` is a request from
+     * the user (Esc): then an empty word gets suggestions too; while typing,
+     * only a word or a `name.` does.
+     */
+    func complete(sql: String, cursor: UInt32, explicit: Bool, keywordCase: KeywordCase)  -> Completions
+    
+}
+/**
+ * The names one connection's editor can suggest.
+ */
+open class Completer: CompleterProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_tableport_core_fn_clone_completer(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_tableport_core_fn_free_completer(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Suggestions at `cursor` (UTF-16 offset). `explicit` is a request from
+     * the user (Esc): then an empty word gets suggestions too; while typing,
+     * only a word or a `name.` does.
+     */
+open func complete(sql: String, cursor: UInt32, explicit: Bool, keywordCase: KeywordCase) -> Completions  {
+    return try!  FfiConverterTypeCompletions_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_method_completer_complete(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(sql),
+        FfiConverterUInt32.lower(cursor),
+        FfiConverterBool.lower(explicit),
+        FfiConverterTypeKeywordCase_lower(keywordCase),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCompleter: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = Completer
+
+    public static func lift(_ handle: UInt64) throws -> Completer {
+        return Completer(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: Completer) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Completer {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: Completer, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompleter_lift(_ handle: UInt64) throws -> Completer {
+    return try FfiConverterTypeCompleter.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompleter_lower(_ value: Completer) -> UInt64 {
+    return FfiConverterTypeCompleter.lower(value)
+}
+
+
+
+
+
+
+/**
  * One open connection to a PostgreSQL server. The connection itself can be
  * replaced (Reconnect), so the app's tabs keep the same session object.
  */
@@ -617,6 +754,12 @@ public protocol DatabaseSessionProtocol: AnyObject, Sendable {
      * Inserts the new rows atomically. See [`DatabaseSession::commit`].
      */
     func insert(rows: [NewRow], relation: Relation, columns: [Column]) async throws 
+    
+    /**
+     * Reads the catalog for autocomplete: every relation with its columns,
+     * the functions, the schemas and the search path.
+     */
+    func completer() async throws  -> Completer
     
     /**
      * Writes the rows to `path` and returns how many it wrote. The rows go
@@ -840,6 +983,26 @@ open func insert(rows: [NewRow], relation: Relation, columns: [Column])async thr
             completeFunc: ffi_tableport_core_rust_future_complete_void,
             freeFunc: ffi_tableport_core_rust_future_free_void,
             liftFunc: { $0 },
+            errorHandler: FfiConverterTypeDatabaseError_lift
+        )
+}
+    
+    /**
+     * Reads the catalog for autocomplete: every relation with its columns,
+     * the functions, the schemas and the search path.
+     */
+open func completer()async throws  -> Completer  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tableport_core_fn_method_databasesession_completer(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_tableport_core_rust_future_poll_u64,
+            completeFunc: ffi_tableport_core_rust_future_complete_u64,
+            freeFunc: ffi_tableport_core_rust_future_free_u64,
+            liftFunc: FfiConverterTypeCompleter_lift,
             errorHandler: FfiConverterTypeDatabaseError_lift
         )
 }
@@ -1690,6 +1853,150 @@ public func FfiConverterTypeColumnDetail_lift(_ buf: RustBuffer) throws -> Colum
 #endif
 public func FfiConverterTypeColumnDetail_lower(_ value: ColumnDetail) -> RustBuffer {
     return FfiConverterTypeColumnDetail.lower(value)
+}
+
+
+public struct CompletionItem: Equatable, Hashable {
+    /**
+     * What the list shows.
+     */
+    public var label: String
+    /**
+     * What replaces the typed word: quoted or schema-qualified when needed.
+     */
+    public var insertText: String
+    /**
+     * Grey text at the right: the schema, the table a column comes from,
+     * or "keyword".
+     */
+    public var detail: String
+    public var kind: CompletionKind
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * What the list shows.
+         */label: String, 
+        /**
+         * What replaces the typed word: quoted or schema-qualified when needed.
+         */insertText: String, 
+        /**
+         * Grey text at the right: the schema, the table a column comes from,
+         * or "keyword".
+         */detail: String, kind: CompletionKind) {
+        self.label = label
+        self.insertText = insertText
+        self.detail = detail
+        self.kind = kind
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CompletionItem: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCompletionItem: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CompletionItem {
+        return
+            try CompletionItem(
+                label: FfiConverterString.read(from: &buf), 
+                insertText: FfiConverterString.read(from: &buf), 
+                detail: FfiConverterString.read(from: &buf), 
+                kind: FfiConverterTypeCompletionKind.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CompletionItem, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.label, into: &buf)
+        FfiConverterString.write(value.insertText, into: &buf)
+        FfiConverterString.write(value.detail, into: &buf)
+        FfiConverterTypeCompletionKind.write(value.kind, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompletionItem_lift(_ buf: RustBuffer) throws -> CompletionItem {
+    return try FfiConverterTypeCompletionItem.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompletionItem_lower(_ value: CompletionItem) -> RustBuffer {
+    return FfiConverterTypeCompletionItem.lower(value)
+}
+
+
+public struct Completions: Equatable, Hashable {
+    /**
+     * UTF-16 offset where the typed word starts; the chosen item replaces
+     * the text from here to the cursor.
+     */
+    public var replaceStart: UInt32
+    public var items: [CompletionItem]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * UTF-16 offset where the typed word starts; the chosen item replaces
+         * the text from here to the cursor.
+         */replaceStart: UInt32, items: [CompletionItem]) {
+        self.replaceStart = replaceStart
+        self.items = items
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension Completions: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCompletions: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Completions {
+        return
+            try Completions(
+                replaceStart: FfiConverterUInt32.read(from: &buf), 
+                items: FfiConverterSequenceTypeCompletionItem.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: Completions, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.replaceStart, into: &buf)
+        FfiConverterSequenceTypeCompletionItem.write(value.items, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompletions_lift(_ buf: RustBuffer) throws -> Completions {
+    return try FfiConverterTypeCompletions.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompletions_lower(_ value: Completions) -> RustBuffer {
+    return FfiConverterTypeCompletions.lower(value)
 }
 
 
@@ -3342,6 +3649,100 @@ public func FfiConverterTypeColumnKind_lower(_ value: ColumnKind) -> RustBuffer 
 
 
 
+public enum CompletionKind: Equatable, Hashable {
+    
+    case table
+    case view
+    case column
+    case function
+    case keyword
+    case schema
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CompletionKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCompletionKind: FfiConverterRustBuffer {
+    typealias SwiftType = CompletionKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CompletionKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .table
+        
+        case 2: return .view
+        
+        case 3: return .column
+        
+        case 4: return .function
+        
+        case 5: return .keyword
+        
+        case 6: return .schema
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CompletionKind, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .table:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .view:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .column:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .function:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .keyword:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .schema:
+            writeInt(&buf, Int32(6))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompletionKind_lift(_ buf: RustBuffer) throws -> CompletionKind {
+    return try FfiConverterTypeCompletionKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompletionKind_lower(_ value: CompletionKind) -> RustBuffer {
+    return FfiConverterTypeCompletionKind.lower(value)
+}
+
+
+
+
 public enum ConstraintKind: Equatable, Hashable {
     
     case primaryKey
@@ -3956,6 +4357,88 @@ public func FfiConverterTypeFilterTarget_lower(_ value: FilterTarget) -> RustBuf
 
 
 /**
+ * How suggested keywords are written. Names keep their own case.
+ */
+
+public enum KeywordCase: Equatable, Hashable {
+    
+    /**
+     * `SELECT`, as Beautify writes them.
+     */
+    case upper
+    case lower
+    /**
+     * Uppercase when the typed word is uppercase.
+     */
+    case asTyped
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension KeywordCase: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeKeywordCase: FfiConverterRustBuffer {
+    typealias SwiftType = KeywordCase
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> KeywordCase {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .upper
+        
+        case 2: return .lower
+        
+        case 3: return .asTyped
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: KeywordCase, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .upper:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .lower:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .asTyped:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeKeywordCase_lift(_ buf: RustBuffer) throws -> KeywordCase {
+    return try FfiConverterTypeKeywordCase.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeKeywordCase_lower(_ value: KeywordCase) -> RustBuffer {
+    return FfiConverterTypeKeywordCase.lower(value)
+}
+
+
+
+/**
  * The kinds of relation the sidebar lists, from `pg_class.relkind`.
  */
 
@@ -4552,6 +5035,31 @@ fileprivate struct FfiConverterSequenceTypeColumnDetail: FfiConverterRustBuffer 
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeColumnDetail.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCompletionItem: FfiConverterRustBuffer {
+    typealias SwiftType = [CompletionItem]
+
+    public static func write(_ value: [CompletionItem], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCompletionItem.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CompletionItem] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CompletionItem]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCompletionItem.read(from: &buf))
         }
         return seq
     }
@@ -5208,10 +5716,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tableport_core_checksum_func_parse_connection_url() != 3082) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_tableport_core_checksum_method_completer_complete() != 57341) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_tableport_core_checksum_method_databasesession_commit() != 47523) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_method_databasesession_insert() != 32830) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_method_databasesession_completer() != 34498) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_method_databasesession_export_rows() != 25738) {

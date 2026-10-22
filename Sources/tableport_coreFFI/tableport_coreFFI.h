@@ -243,6 +243,21 @@ typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureRes
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_CLONE_COMPLETER
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_CLONE_COMPLETER
+uint64_t uniffi_tableport_core_fn_clone_completer(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FREE_COMPLETER
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FREE_COMPLETER
+void uniffi_tableport_core_fn_free_completer(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_COMPLETER_COMPLETE
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_COMPLETER_COMPLETE
+RustBuffer uniffi_tableport_core_fn_method_completer_complete(uint64_t ptr, RustBuffer sql, uint32_t cursor, int8_t explicit, RustBuffer keyword_case, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_CLONE_DATABASESESSION
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_CLONE_DATABASESESSION
 uint64_t uniffi_tableport_core_fn_clone_databasesession(uint64_t handle, RustCallStatus *_Nonnull out_status
@@ -266,6 +281,11 @@ uint64_t uniffi_tableport_core_fn_method_databasesession_commit(uint64_t ptr, Ru
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_DATABASESESSION_INSERT
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_DATABASESESSION_INSERT
 uint64_t uniffi_tableport_core_fn_method_databasesession_insert(uint64_t ptr, RustBuffer rows, RustBuffer relation, RustBuffer columns
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_DATABASESESSION_COMPLETER
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_DATABASESESSION_COMPLETER
+uint64_t uniffi_tableport_core_fn_method_databasesession_completer(uint64_t ptr
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_DATABASESESSION_EXPORT_ROWS
@@ -815,6 +835,12 @@ uint16_t uniffi_tableport_core_checksum_func_parse_connection_url(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_COMPLETER_COMPLETE
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_COMPLETER_COMPLETE
+uint16_t uniffi_tableport_core_checksum_method_completer_complete(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_DATABASESESSION_COMMIT
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_DATABASESESSION_COMMIT
 uint16_t uniffi_tableport_core_checksum_method_databasesession_commit(void
@@ -824,6 +850,12 @@ uint16_t uniffi_tableport_core_checksum_method_databasesession_commit(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_DATABASESESSION_INSERT
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_DATABASESESSION_INSERT
 uint16_t uniffi_tableport_core_checksum_method_databasesession_insert(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_DATABASESESSION_COMPLETER
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_DATABASESESSION_COMPLETER
+uint16_t uniffi_tableport_core_checksum_method_databasesession_completer(void
     
 );
 #endif

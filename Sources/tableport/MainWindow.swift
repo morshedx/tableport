@@ -37,6 +37,9 @@ final class WorkspaceModel: ObservableObject {
     /// What the sidebar shows, in its own object: opening and closing tabs
     /// must not make SwiftUI rebuild a list of hundreds of tables.
     let sidebar = SidebarModel()
+    /// Names for the query editor's autocomplete, loaded after the sidebar.
+    let completion = CompletionSource()
+    private var completionTask: Task<Void, Never>?
     var schemas: [SchemaContents] { sidebar.schemas }
     var load: Load { sidebar.load }
     @Published private(set) var databases: [String] = []
@@ -161,9 +164,27 @@ final class WorkspaceModel: ObservableObject {
                 sidebar.routines = [:]
                 sidebar.columns = [:]
                 self.loadRoutines()
+                self.loadCompleter()
             } catch {
                 guard !Task.isCancelled else { return }
                 self.sidebar.load = .failed(error.displayMessage)
+            }
+        }
+    }
+
+    /// Reads the catalog for autocomplete. Without it the editor still works,
+    /// with no suggestions, so a failure is only logged.
+    private func loadCompleter() {
+        completionTask?.cancel()
+        let session = session
+        let completion = completion
+        completionTask = Task {
+            do {
+                let completer = try await session.completer()
+                guard !Task.isCancelled else { return }
+                completion.completer = completer
+            } catch {
+                CompletionSource.logger.error("Could not load autocomplete names: \(error.displayMessage, privacy: .public)")
             }
         }
     }
@@ -231,7 +252,8 @@ final class WorkspaceModel: ObservableObject {
 
     func queryModel(for tab: Tab) -> QueryTabModel {
         if let model = queryModels[tab.id] { return model }
-        let model = QueryTabModel(session: session, isProduction: connection.tag == .production, history: queryHistory)
+        let model = QueryTabModel(session: session, isProduction: connection.tag == .production, history: queryHistory,
+                                  completion: completion)
         queryModels[tab.id] = model
         return model
     }
@@ -297,7 +319,8 @@ final class WorkspaceModel: ObservableObject {
     func newQuery(sql: String = "") {
         queryCount += 1
         let tab = Tab.query(number: queryCount)
-        let model = QueryTabModel(session: session, isProduction: connection.tag == .production, history: queryHistory)
+        let model = QueryTabModel(session: session, isProduction: connection.tag == .production, history: queryHistory,
+                                  completion: completion)
         model.sql = sql
         // The tab bar shows a saved query's name.
         model.$savedQuery.dropFirst().receive(on: RunLoop.main).sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &subscriptions)

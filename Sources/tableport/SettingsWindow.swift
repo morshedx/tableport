@@ -22,7 +22,7 @@ struct SettingsView: View {
     private let pages = [
         SettingsPage(SettingsPageID.general, title: "General", subtitle: "Look, tables and safety.",
                      symbol: "slider.horizontal.3", tile: Theme.Tile.gray),
-        SettingsPage(.editor, title: "Editor", subtitle: "Fonts and query results.",
+        SettingsPage(.editor, title: "Editor", subtitle: "Fonts, autocomplete and query results.",
                      symbol: "chevron.left.forwardslash.chevron.right", tile: Theme.Tile.blue),
         SettingsPage(.updates, title: "Updates", subtitle: "New versions and what changed.",
                      symbol: "arrow.down.circle", tile: Theme.Tile.green, startsGroup: true),
@@ -72,6 +72,12 @@ struct SettingsView: View {
             RowDivider()
             SettingsRow("tablecells", Theme.Tile.teal, "Data grid", hint: "JetBrains Mono, \(Int(settings.gridFontSize)) pt.") {
                 Stepper("Data grid", value: $settings.gridFontSize, in: 10...16, step: 1).labelsHidden()
+            }
+        }
+        SettingsGroup("Autocomplete") {
+            SettingsRow("textformat", Theme.Tile.purple, "Keyword case",
+                        hint: "How suggested keywords are written. Table and column names keep their own case.") {
+                picker("Keyword case", $settings.keywordCase, AppSettings.keywordCases)
             }
         }
         SettingsGroup("Queries") {

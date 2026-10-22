@@ -1,6 +1,6 @@
 mod common;
 
-use tableport_core::{FilterOperator, FilterTarget, Relation, RelationKind, RowFilter, RowSort, GRID_CELL_LIMIT};
+use tableport_core::{FilterOperator, KeywordCase, FilterTarget, Relation, RelationKind, RowFilter, RowSort, GRID_CELL_LIMIT};
 use common::{enabled, with_schema};
 
 const SETUP: &[&str] = &[
@@ -184,6 +184,33 @@ async fn estimates_rows_from_statistics() {
         assert_eq!(session.estimated_row_count(relation(&schema)).await.unwrap(), None);
         session.execute(format!(r#"ANALYZE {schema}."Odd ""Name""""#)).await.unwrap();
         assert_eq!(session.estimated_row_count(relation(&schema)).await.unwrap(), Some(5));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn completer_reads_the_catalog() {
+    if !enabled() { return; }
+    with_schema(SETUP, |session, schema| async move {
+        let completer = session.completer().await.unwrap();
+        // The test schema isn't on the search path: the name is qualified and quoted.
+        let sql = format!("select * from {schema}.");
+        let result = completer.complete(sql.clone(), sql.len() as u32, false, KeywordCase::Upper);
+        let odd = result.items.iter().find(|item| item.label == r#"Odd "Name""#).expect("the table is offered");
+        assert_eq!(odd.insert_text, r#""Odd ""Name""""#);
+        // Its columns, through an alias.
+        let sql = format!(r#"select o. from {schema}."Odd ""Name""" o"#);
+        let result = completer.complete(sql, 9, false, KeywordCase::Upper);
+        let columns: Vec<_> = result.items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(columns, ["id", "name", "note", "data"]);
+        // Built-in functions come from pg_catalog.
+        let sql = "select lowe";
+        let result = completer.complete(sql.into(), sql.len() as u32, false, KeywordCase::Upper);
+        assert!(result.items.iter().any(|item| item.label == "lower"), "{:?}", result.items);
+        // Internal functions (type input/output) are left out.
+        let sql = "select shell_";
+        let result = completer.complete(sql.into(), sql.len() as u32, false, KeywordCase::Upper);
+        assert!(result.items.is_empty(), "{:?}", result.items);
     })
     .await;
 }

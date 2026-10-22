@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import TablePortCore
 
 /// Preferences from the Settings window, kept in UserDefaults. Code that
 /// draws or loads reads them when it needs them, so a change applies to the
@@ -40,6 +41,17 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(queryRowLimit, forKey: "queryRowLimit") }
     }
 
+    /// How autocomplete writes keywords.
+    @Published var keywordCase: KeywordCase {
+        didSet { defaults.set(Self.name(of: keywordCase), forKey: "keywordCase") }
+    }
+
+    static let keywordCases: [(KeywordCase, String)] = [(.upper, "Uppercase"), (.lower, "Lowercase"), (.asTyped, "As typed")]
+
+    private static func name(of keywordCase: KeywordCase) -> String {
+        keywordCases.first { $0.0 == keywordCase }?.1 ?? "Uppercase"
+    }
+
     static let pageSizes = [100, 300, 500, 1000]
     static let queryRowLimits = [500, 1000, 5000, 10000]
 
@@ -49,6 +61,8 @@ final class AppSettings: ObservableObject {
         confirmProductionWrites = defaults.object(forKey: "confirmProductionWrites") as? Bool ?? true
         editorFontSize = (11...20).contains(defaults.double(forKey: "editorFontSize")) ? defaults.double(forKey: "editorFontSize") : 13
         gridFontSize = (10...16).contains(defaults.double(forKey: "gridFontSize")) ? defaults.double(forKey: "gridFontSize") : 12
+        let savedCase = defaults.string(forKey: "keywordCase")
+        keywordCase = Self.keywordCases.first { $0.1 == savedCase }?.0 ?? .upper
         queryRowLimit = Self.queryRowLimits.contains(defaults.integer(forKey: "queryRowLimit")) ? defaults.integer(forKey: "queryRowLimit") : 1000
     }
 

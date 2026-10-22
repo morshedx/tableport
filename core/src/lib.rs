@@ -6,6 +6,7 @@
 //! spawned task comes back as an error instead.
 
 mod changes;
+mod completion;
 mod error;
 mod export;
 mod query;
@@ -19,6 +20,7 @@ mod structure;
 mod url;
 
 pub use changes::{changes_sql, insert_sql, CellDraft, NewRow, PendingChanges, RowUpdate, SqlFunction};
+pub use completion::{Completer, CompletionItem, CompletionKind, Completions, KeywordCase};
 pub use error::DatabaseError;
 pub use export::{rows_to_csv, rows_to_insert_sql, rows_to_json, ExportFormat, ExportScope};
 pub use query::{QueryResult, ResultSet};
