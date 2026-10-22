@@ -474,6 +474,8 @@ private func commonColumnTypes(_ engine: Engine) -> [String] {
          "date", "datetime", "timestamp", "time", "json", "blob", "enum('a','b')", "char(36)"]
     case .sqlite, .libsql:
         ["INTEGER", "REAL", "TEXT", "BLOB", "NUMERIC"]
+    case .redis:
+        []
     }
 }
 
@@ -533,7 +535,7 @@ struct NewTableSheet: View {
                 Row(name: "id", columnType: "bigint", primaryKey: true, nullable: false, defaultValue: "AUTO_INCREMENT"),
                 Row(name: "", columnType: "varchar(255)", primaryKey: false, nullable: true),
             ])
-        case .postgres:
+        case .postgres, .redis:
             break
         }
     }

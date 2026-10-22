@@ -10,7 +10,8 @@ pub struct ParsedUrl {
     pub user: Option<String>,
     pub password: Option<String>,
     pub tls: Option<TlsMode>,
-    /// PostgreSQL for postgres://, MySQL for mysql:// and mariadb://.
+    /// PostgreSQL for postgres://, MySQL for mysql:// and mariadb://, Redis
+    /// for redis:// and rediss://.
     pub engine: Engine,
 }
 
@@ -29,8 +30,12 @@ pub fn parse_connection_url(url: &str) -> Result<ParsedUrl, DatabaseError> {
         (Engine::Postgres, rest)
     } else if let Some(rest) = url.strip_prefix("mysql://").or_else(|| url.strip_prefix("mariadb://")) {
         (Engine::Mysql, rest)
+    } else if let Some(rest) = url.strip_prefix("redis://") {
+        (Engine::Redis, rest)
+    } else if let Some(rest) = url.strip_prefix("rediss://") {
+        (Engine::Redis, rest)
     } else {
-        return Err(DatabaseError::new("A connection URL starts with postgres://, postgresql://, mysql:// or mariadb://."));
+        return Err(DatabaseError::new("A connection URL starts with postgres://, mysql://, mariadb://, redis:// or rediss://."));
     };
     let (rest, query) = rest.split_once('?').unwrap_or((rest, ""));
     let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
@@ -41,6 +46,10 @@ pub fn parse_connection_url(url: &str) -> Result<ParsedUrl, DatabaseError> {
         None => (None, authority),
     };
     let mut parsed = ParsedUrl { host: None, port: None, database: None, user: None, password: None, tls: None, engine };
+    // rediss:// is Redis over TLS.
+    if url.starts_with("rediss://") {
+        parsed.tls = Some(TlsMode::Require);
+    }
     if let Some(credentials) = credentials {
         let (user, password) = match credentials.split_once(':') {
             Some((user, password)) => (user, Some(password)),
@@ -74,7 +83,11 @@ pub fn parse_connection_url(url: &str) -> Result<ParsedUrl, DatabaseError> {
     }
     // No port means the engine's default.
     if parsed.host.is_some() && parsed.port.is_none() {
-        parsed.port = Some(if engine == Engine::Mysql { 3306 } else { 5432 });
+        parsed.port = Some(match engine {
+            Engine::Mysql => 3306,
+            Engine::Redis => 6379,
+            _ => 5432,
+        });
     }
     Ok(parsed)
 }

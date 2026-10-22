@@ -70,9 +70,13 @@ final class WorkspaceModel: ObservableObject {
     lazy var savedQueries = SavedQueries(connectionID: connection.id)
     private var loadTask: Task<Void, Never>?
 
+    /// Set for Redis, whose keys replace the sidebar, tabs and grid.
+    let redis: RedisModel?
+
     init(connection: SavedConnection, session: DatabaseSession) {
         self.connection = connection
         self.session = session
+        redis = connection.engine == .redis ? RedisModel(connection: connection, session: session) : nil
         reload()
         watchConnection()
     }
@@ -145,11 +149,19 @@ final class WorkspaceModel: ObservableObject {
         let settings = session.settings()
         if settings.engine == .sqlite { return (settings.database as NSString).abbreviatingWithTildeInPath }
         if settings.engine == .libsql { return settings.database }
+        if settings.engine == .redis {
+            let user = settings.user.isEmpty ? "" : "\(settings.user)@"
+            return "\(user)\(settings.host):\(settings.port) · db\(settings.database.isEmpty ? "0" : settings.database)"
+        }
         let endpoint = "\(settings.user)@\(settings.host):\(settings.port)/\(settings.database)"
         return settings.ssh.map { "\(endpoint) via SSH \($0.user)@\($0.host):\($0.port)" } ?? endpoint
     }
 
     func reload() {
+        if let redis {
+            redis.reload()
+            return
+        }
         loadTask?.cancel()
         sidebar.load = .loading
         let session = session
@@ -600,15 +612,19 @@ struct WorkspaceView: View {
             HeaderBar(model: model)
             Divider()
             ConnectionLostBanner(model: model)
-            HSplitView {
-                SidebarView(sidebar: model.sidebar, workspace: model, history: model.queryHistory, saved: model.savedQueries)
-                    .frame(minWidth: 180, idealWidth: 240, maxWidth: 420)
-                VStack(spacing: 0) {
-                    TabBar(model: model)
-                    Divider()
-                    TabContent(model: model)
+            if let redis = model.redis {
+                RedisWorkspace(model: redis)
+            } else {
+                HSplitView {
+                    SidebarView(sidebar: model.sidebar, workspace: model, history: model.queryHistory, saved: model.savedQueries)
+                        .frame(minWidth: 180, idealWidth: 240, maxWidth: 420)
+                    VStack(spacing: 0) {
+                        TabBar(model: model)
+                        Divider()
+                        TabContent(model: model)
+                    }
+                    .frame(minWidth: 360)
                 }
-                .frame(minWidth: 360)
             }
             Divider()
             StatusBar(model: model, sidebar: model.sidebar)
@@ -665,7 +681,7 @@ private struct HeaderBar: View {
                     Text((model.connection.database as NSString).lastPathComponent)
                 }
                 .help(model.connection.database)
-            } else if model.connection.engine == .mysql {
+            } else if model.connection.engine == .mysql || model.connection.engine == .redis {
                 // The sidebar lists every database of the server; the chip names the server.
                 HeaderChip {
                     headerLucide("database")

@@ -102,8 +102,10 @@ struct ConnectionForm: View {
     private var isServerComplete: Bool {
         if engine.isSqlite { return !trimmed(database).isEmpty }
         // MySQL shows every database of the server; naming one is optional.
-        let hasDatabase = engine == .mysql || !trimmed(database).isEmpty
-        return !trimmed(host).isEmpty && hasDatabase && !trimmed(user).isEmpty && number(port) != nil
+        let hasDatabase = engine == .mysql || engine == .redis || !trimmed(database).isEmpty
+        // Redis logs in as its default user when none is given.
+        let hasUser = engine == .redis || !trimmed(user).isEmpty
+        return !trimmed(host).isEmpty && hasDatabase && hasUser && number(port) != nil
     }
 
     private var isSSHComplete: Bool {
@@ -214,7 +216,7 @@ struct ConnectionForm: View {
         switch engine {
         case .sqlite: sqliteTab
         case .libsql: libsqlTab
-        case .postgres, .mysql: serverTab
+        case .postgres, .mysql, .redis: serverTab
         }
     }
 
@@ -294,7 +296,9 @@ struct ConnectionForm: View {
                 FormRow("Tag") {
                     tagChips
                 }
-                SwitchRow("Read-only", hint: "Browse and query, never change data. The server refuses every write.",
+                SwitchRow("Read-only", hint: engine == .redis
+                              ? "Browse and read, never change data. TablePort runs only commands that read."
+                              : "Browse and query, never change data. The server refuses every write.",
                           isOn: $readOnly)
             }
             FormCard("Server") {
@@ -303,18 +307,18 @@ struct ConnectionForm: View {
                         TextField("Host", text: $host, prompt: Text("localhost"))
                             // A URL pasted into Host fills the whole form instead.
                             .onChange(of: host) { _, text in
-                                if ["postgres://", "postgresql://", "mysql://", "mariadb://"].contains(where: text.hasPrefix) { url = text }
+                                if ["postgres://", "postgresql://", "mysql://", "mariadb://", "redis://", "rediss://"].contains(where: text.hasPrefix) { url = text }
                             }
                         Text("Port").foregroundStyle(Theme.inkSecondary)
-                        TextField("Port", text: $port, prompt: Text(engine == .mysql ? "3306" : "5432"))
+                        TextField("Port", text: $port, prompt: Text(Self.defaults(engine).port))
                             .frame(width: 52)
                     }
                 }
                 FormRow("Database") {
-                    TextField("Database", text: $database, prompt: Text(engine == .mysql ? "optional: every database is shown" : "postgres"))
+                    TextField("Database", text: $database, prompt: Text(databasePrompt))
                 }
                 FormRow("User") {
-                    TextField("User", text: $user, prompt: Text(engine == .mysql ? "root" : "postgres"))
+                    TextField("User", text: $user, prompt: Text(engine == .redis ? "default" : engine == .mysql ? "root" : "postgres"))
                 }
                 FormRow("Password") {
                     HStack(spacing: 6) {
@@ -415,7 +419,7 @@ struct ConnectionForm: View {
             }
             if isNew {
                 Picker("Database", selection: $engine) {
-                    ForEach([Engine.postgres, .mysql, .sqlite, .libsql], id: \.self) { engine in
+                    ForEach([Engine.postgres, .mysql, .sqlite, .libsql, .redis], id: \.self) { engine in
                         Text(engine == .mysql ? "MySQL / MariaDB" : engine == .libsql ? "libSQL / Turso" : engine.label).tag(engine)
                     }
                 }
@@ -427,11 +431,20 @@ struct ConnectionForm: View {
         .onChange(of: engine) { old, engine in switchEngine(from: old, to: engine) }
     }
 
+    private var databasePrompt: String {
+        switch engine {
+        case .mysql: "optional: every database is shown"
+        case .redis: "0"
+        default: "postgres"
+        }
+    }
+
     /// Port, user and database a new connection starts with.
     private static func defaults(_ engine: Engine) -> (port: String, user: String, database: String) {
         switch engine {
         case .postgres: ("5432", "postgres", "postgres")
         case .mysql: ("3306", "root", "")
+        case .redis: ("6379", "", "0")
         case .sqlite, .libsql: ("", "", "")
         }
     }
@@ -449,6 +462,8 @@ struct ConnectionForm: View {
             host = "localhost"
         }
         if port == before.port || trimmed(port).isEmpty { port = after.port }
+        // Redis servers rarely speak TLS unless told to; trying first costs a second.
+        if engine == .redis && tls == .prefer { tls = .disable }
         if user == before.user || trimmed(user).isEmpty { user = after.user }
         // A file's path is no server database, and back.
         // A file's path or a URL is no server database, and back.
@@ -470,6 +485,10 @@ struct ConnectionForm: View {
             let database = trimmed(self.database).isEmpty ? "" : "/\(trimmed(self.database))"
             return "MySQL · \(trimmed(user))@\(host):\(port)\(database)"
         }
+        if engine == .redis {
+            let user = trimmed(self.user).isEmpty ? "" : "\(trimmed(self.user))@"
+            return "Redis · \(user)\(host):\(port)/\(trimmed(database).isEmpty ? "0" : trimmed(database))"
+        }
         let database = trimmed(self.database).isEmpty ? "database" : trimmed(self.database)
         return "PostgreSQL · \(trimmed(user))@\(host):\(port)/\(database)"
     }
@@ -478,7 +497,7 @@ struct ConnectionForm: View {
         HStack(spacing: 8) {
             Image(systemName: "link")
                 .foregroundStyle(Theme.inkSecondary)
-            TextField("URL", text: $url, prompt: Text("Paste a \(engine == .mysql ? "mysql" : "postgres"):// URL to fill the form"))
+            TextField("URL", text: $url, prompt: Text("Paste a \(engine == .mysql ? "mysql" : engine == .redis ? "redis" : "postgres"):// URL to fill the form"))
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: url) { _, text in fill(from: text) }
         }
@@ -621,7 +640,7 @@ struct ConnectionForm: View {
             // Short, to fit beside Test: "Connected · 17.7" or "Opened · SQLite 3.50"; the full version on hover.
             Label(engine == .sqlite ? "Opened · \(version)"
                   // "MySQL 8.4.13" → "8.4.13"; the server's name is in the header.
-                  : engine == .mysql || engine == .libsql ? "Connected · \(version.split(separator: " ").last.map(String.init) ?? version)"
+                  : engine == .mysql || engine == .libsql || engine == .redis ? "Connected · \(version.split(separator: " ").last.map(String.init) ?? version)"
                   : "Connected · \(version.split(separator: " ").first.map(String.init) ?? version)",
                   systemImage: "checkmark.circle.fill")
                 .help("PostgreSQL \(version)")

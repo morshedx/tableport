@@ -51,6 +51,8 @@ enum MainMenu {
     static func make(_ actions: Actions) -> NSMenu {
         let workspace = actions.workspace
         let table = { workspace()?.currentTableModel }
+        // Redis has keys, not tables or SQL.
+        let sqlWorkspace = { workspace().flatMap { $0.redis == nil ? $0 : nil } }
         let query = { workspace()?.currentQueryModel }
 
         let app = NSMenu()
@@ -68,11 +70,11 @@ enum MainMenu {
         let file = NSMenu(title: "File")
         file.addItem(CommandItem("New Connection…", key: "n", action: actions.newConnection))
         file.addItem(CommandItem("Open SQLite File…", key: "o", action: actions.openSqliteFile))
-        file.addItem(CommandItem("New Query Tab", key: "t", isEnabled: { workspace() != nil }) { workspace()?.newQuery() })
-        file.addItem(CommandItem("New Table…", isEnabled: { workspace().map { !$0.connection.readOnly } ?? false }) {
+        file.addItem(CommandItem("New Query Tab", key: "t", isEnabled: { sqlWorkspace() != nil }) { sqlWorkspace()?.newQuery() })
+        file.addItem(CommandItem("New Table…", isEnabled: { sqlWorkspace().map { !$0.connection.readOnly } ?? false }) {
             workspace()?.showsNewTable = true
         })
-        file.addItem(CommandItem("Open Anything…", key: "p", isEnabled: { workspace() != nil }) {
+        file.addItem(CommandItem("Open Anything…", key: "p", isEnabled: { sqlWorkspace() != nil }) {
             workspace().map { $0.showsQuickOpen.toggle() }
         })
         file.addItem(.separator())

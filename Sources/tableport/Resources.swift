@@ -86,6 +86,8 @@ struct EngineLogo: View {
             logo(Self.mysql, label: "MySQL", letters: "My", color: Self.mysqlBlue, tint: true)
         case .libsql:
             logo(Self.turso, label: "libSQL", letters: "Tu", color: Self.tursoTeal, tint: true)
+        case .redis:
+            logo(Self.redis, label: "Redis", letters: "Re", color: Color(red: 1.0, green: 0.27, blue: 0.22))
         }
     }
 
@@ -118,6 +120,7 @@ struct EngineLogo: View {
     private static let sqlite = image("sqlite")
     private static let mysql = image("mysql")
     private static let turso = image("turso")
+    private static let redis = image("redis")
     /// Turso's own teal in dark mode; darker in light mode, where it would vanish.
     private static let tursoTeal = Color(nsColor: NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua

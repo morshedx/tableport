@@ -551,6 +551,22 @@ fileprivate struct FfiConverterInt64: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterDouble: FfiConverterPrimitive {
+    typealias FfiType = Double
+    typealias SwiftType = Double
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Double {
+        return try lift(readDouble(&buf))
+    }
+
+    public static func write(_ value: Double, into buf: inout [UInt8]) {
+        writeDouble(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterBool : FfiConverter {
     typealias FfiType = Int8
     typealias SwiftType = Bool
@@ -810,6 +826,29 @@ public protocol DatabaseSessionProtocol: AnyObject, Sendable {
      * `max_rows` rows of each result, so a huge SELECT doesn't fill memory.
      */
     func runQuery(sql: String, maxRows: UInt64) async throws  -> QueryResult
+    
+    /**
+     * Runs the changes in one MULTI/EXEC.
+     */
+    func redisApply(database: UInt32, changes: [RedisChange]) async throws 
+    
+    /**
+     * The console: one command line, the reply as redis-cli shows it.
+     */
+    func redisCommand(database: UInt32, line: String) async throws  -> String
+    
+    func redisDatabases() async throws  -> [RedisDatabase]
+    
+    /**
+     * One page of keys matching `pattern` (a glob, * for all); pass the
+     * returned cursor back for the next page, until it is 0.
+     */
+    func redisScan(database: UInt32, pattern: String, cursor: UInt64, count: UInt32) async throws  -> RedisKeyPage
+    
+    /**
+     * A key's type, expiry, length and first `limit` elements.
+     */
+    func redisValue(database: UInt32, key: String, limit: UInt32) async throws  -> RedisValue
     
     func columns(relation: Relation) async throws  -> [Column]
     
@@ -1131,6 +1170,99 @@ open func runQuery(sql: String, maxRows: UInt64)async throws  -> QueryResult  {
             completeFunc: ffi_tableport_core_rust_future_complete_rust_buffer,
             freeFunc: ffi_tableport_core_rust_future_free_rust_buffer,
             liftFunc: FfiConverterTypeQueryResult_lift,
+            errorHandler: FfiConverterTypeDatabaseError_lift
+        )
+}
+    
+    /**
+     * Runs the changes in one MULTI/EXEC.
+     */
+open func redisApply(database: UInt32, changes: [RedisChange])async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tableport_core_fn_method_databasesession_redis_apply(
+                        self.uniffiCloneHandle(),FfiConverterUInt32.lower(database),FfiConverterSequenceTypeRedisChange.lower(changes)
+                )
+            },
+            pollFunc: ffi_tableport_core_rust_future_poll_void,
+            completeFunc: ffi_tableport_core_rust_future_complete_void,
+            freeFunc: ffi_tableport_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeDatabaseError_lift
+        )
+}
+    
+    /**
+     * The console: one command line, the reply as redis-cli shows it.
+     */
+open func redisCommand(database: UInt32, line: String)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tableport_core_fn_method_databasesession_redis_command(
+                        self.uniffiCloneHandle(),FfiConverterUInt32.lower(database),FfiConverterString.lower(line)
+                )
+            },
+            pollFunc: ffi_tableport_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tableport_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tableport_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeDatabaseError_lift
+        )
+}
+    
+open func redisDatabases()async throws  -> [RedisDatabase]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tableport_core_fn_method_databasesession_redis_databases(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_tableport_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tableport_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tableport_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeRedisDatabase.lift,
+            errorHandler: FfiConverterTypeDatabaseError_lift
+        )
+}
+    
+    /**
+     * One page of keys matching `pattern` (a glob, * for all); pass the
+     * returned cursor back for the next page, until it is 0.
+     */
+open func redisScan(database: UInt32, pattern: String, cursor: UInt64, count: UInt32)async throws  -> RedisKeyPage  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tableport_core_fn_method_databasesession_redis_scan(
+                        self.uniffiCloneHandle(),FfiConverterUInt32.lower(database),FfiConverterString.lower(pattern),FfiConverterUInt64.lower(cursor),FfiConverterUInt32.lower(count)
+                )
+            },
+            pollFunc: ffi_tableport_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tableport_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tableport_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeRedisKeyPage_lift,
+            errorHandler: FfiConverterTypeDatabaseError_lift
+        )
+}
+    
+    /**
+     * A key's type, expiry, length and first `limit` elements.
+     */
+open func redisValue(database: UInt32, key: String, limit: UInt32)async throws  -> RedisValue  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tableport_core_fn_method_databasesession_redis_value(
+                        self.uniffiCloneHandle(),FfiConverterUInt32.lower(database),FfiConverterString.lower(key),FfiConverterUInt32.lower(limit)
+                )
+            },
+            pollFunc: ffi_tableport_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tableport_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tableport_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeRedisValue_lift,
             errorHandler: FfiConverterTypeDatabaseError_lift
         )
 }
@@ -2974,6 +3106,10 @@ public struct McpConnection: Equatable, Hashable {
      * production, staging…, so the AI tool can tell them apart.
      */
     public var tag: String?
+    /**
+     * So the AI tool writes the right language: SQL, or Redis commands.
+     */
+    public var engine: Engine
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2986,12 +3122,16 @@ public struct McpConnection: Equatable, Hashable {
          */allDatabases: Bool, 
         /**
          * production, staging…, so the AI tool can tell them apart.
-         */tag: String?) {
+         */tag: String?, 
+        /**
+         * So the AI tool writes the right language: SQL, or Redis commands.
+         */engine: Engine) {
         self.id = id
         self.name = name
         self.database = database
         self.allDatabases = allDatabases
         self.tag = tag
+        self.engine = engine
     }
 
     
@@ -3014,7 +3154,8 @@ public struct FfiConverterTypeMcpConnection: FfiConverterRustBuffer {
                 name: FfiConverterString.read(from: &buf), 
                 database: FfiConverterString.read(from: &buf), 
                 allDatabases: FfiConverterBool.read(from: &buf), 
-                tag: FfiConverterOptionString.read(from: &buf)
+                tag: FfiConverterOptionString.read(from: &buf), 
+                engine: FfiConverterTypeEngine.read(from: &buf)
         )
     }
 
@@ -3024,6 +3165,7 @@ public struct FfiConverterTypeMcpConnection: FfiConverterRustBuffer {
         FfiConverterString.write(value.database, into: &buf)
         FfiConverterBool.write(value.allDatabases, into: &buf)
         FfiConverterOptionString.write(value.tag, into: &buf)
+        FfiConverterTypeEngine.write(value.engine, into: &buf)
     }
 }
 
@@ -3256,7 +3398,8 @@ public struct ParsedUrl: Equatable, Hashable {
     public var password: String?
     public var tls: TlsMode?
     /**
-     * PostgreSQL for postgres://, MySQL for mysql:// and mariadb://.
+     * PostgreSQL for postgres://, MySQL for mysql:// and mariadb://, Redis
+     * for redis:// and rediss://.
      */
     public var engine: Engine
 
@@ -3264,7 +3407,8 @@ public struct ParsedUrl: Equatable, Hashable {
     // declare one manually.
     public init(host: String?, port: UInt16?, database: String?, user: String?, password: String?, tls: TlsMode?, 
         /**
-         * PostgreSQL for postgres://, MySQL for mysql:// and mariadb://.
+         * PostgreSQL for postgres://, MySQL for mysql:// and mariadb://, Redis
+         * for redis:// and rediss://.
          */engine: Engine) {
         self.host = host
         self.port = port
@@ -3474,6 +3618,346 @@ public func FfiConverterTypeQueryResult_lift(_ buf: RustBuffer) throws -> QueryR
 #endif
 public func FfiConverterTypeQueryResult_lower(_ value: QueryResult) -> RustBuffer {
     return FfiConverterTypeQueryResult.lower(value)
+}
+
+
+/**
+ * One logical database: its number and how many keys it holds.
+ */
+public struct RedisDatabase: Equatable, Hashable {
+    public var index: UInt32
+    public var keys: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(index: UInt32, keys: UInt64) {
+        self.index = index
+        self.keys = keys
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RedisDatabase: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRedisDatabase: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RedisDatabase {
+        return
+            try RedisDatabase(
+                index: FfiConverterUInt32.read(from: &buf), 
+                keys: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RedisDatabase, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.index, into: &buf)
+        FfiConverterUInt64.write(value.keys, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRedisDatabase_lift(_ buf: RustBuffer) throws -> RedisDatabase {
+    return try FfiConverterTypeRedisDatabase.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRedisDatabase_lower(_ value: RedisDatabase) -> RustBuffer {
+    return FfiConverterTypeRedisDatabase.lower(value)
+}
+
+
+/**
+ * One element of a value: a hash field and its value, a list or set
+ * member, a sorted set member and its score, or a stream entry.
+ */
+public struct RedisItem: Equatable, Hashable {
+    /**
+     * The hash field, the list index, or the stream entry ID.
+     */
+    public var field: String?
+    public var value: String
+    public var score: Double?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The hash field, the list index, or the stream entry ID.
+         */field: String?, value: String, score: Double?) {
+        self.field = field
+        self.value = value
+        self.score = score
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RedisItem: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRedisItem: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RedisItem {
+        return
+            try RedisItem(
+                field: FfiConverterOptionString.read(from: &buf), 
+                value: FfiConverterString.read(from: &buf), 
+                score: FfiConverterOptionDouble.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RedisItem, into buf: inout [UInt8]) {
+        FfiConverterOptionString.write(value.field, into: &buf)
+        FfiConverterString.write(value.value, into: &buf)
+        FfiConverterOptionDouble.write(value.score, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRedisItem_lift(_ buf: RustBuffer) throws -> RedisItem {
+    return try FfiConverterTypeRedisItem.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRedisItem_lower(_ value: RedisItem) -> RustBuffer {
+    return FfiConverterTypeRedisItem.lower(value)
+}
+
+
+public struct RedisKey: Equatable, Hashable {
+    public var name: String
+    public var kind: RedisKeyKind
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String, kind: RedisKeyKind) {
+        self.name = name
+        self.kind = kind
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RedisKey: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRedisKey: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RedisKey {
+        return
+            try RedisKey(
+                name: FfiConverterString.read(from: &buf), 
+                kind: FfiConverterTypeRedisKeyKind.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RedisKey, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterTypeRedisKeyKind.write(value.kind, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRedisKey_lift(_ buf: RustBuffer) throws -> RedisKey {
+    return try FfiConverterTypeRedisKey.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRedisKey_lower(_ value: RedisKey) -> RustBuffer {
+    return FfiConverterTypeRedisKey.lower(value)
+}
+
+
+/**
+ * A page of a SCAN: `cursor` 0 means every key has been seen.
+ */
+public struct RedisKeyPage: Equatable, Hashable {
+    public var keys: [RedisKey]
+    public var cursor: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(keys: [RedisKey], cursor: UInt64) {
+        self.keys = keys
+        self.cursor = cursor
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RedisKeyPage: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRedisKeyPage: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RedisKeyPage {
+        return
+            try RedisKeyPage(
+                keys: FfiConverterSequenceTypeRedisKey.read(from: &buf), 
+                cursor: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RedisKeyPage, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeRedisKey.write(value.keys, into: &buf)
+        FfiConverterUInt64.write(value.cursor, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRedisKeyPage_lift(_ buf: RustBuffer) throws -> RedisKeyPage {
+    return try FfiConverterTypeRedisKeyPage.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRedisKeyPage_lower(_ value: RedisKeyPage) -> RustBuffer {
+    return FfiConverterTypeRedisKeyPage.lower(value)
+}
+
+
+public struct RedisValue: Equatable, Hashable {
+    public var key: String
+    public var kind: RedisKeyKind
+    /**
+     * The type's name as Redis gives it, for kinds TablePort doesn't show.
+     */
+    public var typeName: String
+    /**
+     * Seconds until the key expires; None when it never does.
+     */
+    public var ttlSeconds: Int64?
+    /**
+     * Bytes of a string, elements of the others.
+     */
+    public var length: UInt64
+    /**
+     * A string's or JSON document's text.
+     */
+    public var text: String?
+    /**
+     * The first elements of the others, up to the limit asked for.
+     */
+    public var items: [RedisItem]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(key: String, kind: RedisKeyKind, 
+        /**
+         * The type's name as Redis gives it, for kinds TablePort doesn't show.
+         */typeName: String, 
+        /**
+         * Seconds until the key expires; None when it never does.
+         */ttlSeconds: Int64?, 
+        /**
+         * Bytes of a string, elements of the others.
+         */length: UInt64, 
+        /**
+         * A string's or JSON document's text.
+         */text: String?, 
+        /**
+         * The first elements of the others, up to the limit asked for.
+         */items: [RedisItem]) {
+        self.key = key
+        self.kind = kind
+        self.typeName = typeName
+        self.ttlSeconds = ttlSeconds
+        self.length = length
+        self.text = text
+        self.items = items
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RedisValue: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRedisValue: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RedisValue {
+        return
+            try RedisValue(
+                key: FfiConverterString.read(from: &buf), 
+                kind: FfiConverterTypeRedisKeyKind.read(from: &buf), 
+                typeName: FfiConverterString.read(from: &buf), 
+                ttlSeconds: FfiConverterOptionInt64.read(from: &buf), 
+                length: FfiConverterUInt64.read(from: &buf), 
+                text: FfiConverterOptionString.read(from: &buf), 
+                items: FfiConverterSequenceTypeRedisItem.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RedisValue, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.key, into: &buf)
+        FfiConverterTypeRedisKeyKind.write(value.kind, into: &buf)
+        FfiConverterString.write(value.typeName, into: &buf)
+        FfiConverterOptionInt64.write(value.ttlSeconds, into: &buf)
+        FfiConverterUInt64.write(value.length, into: &buf)
+        FfiConverterOptionString.write(value.text, into: &buf)
+        FfiConverterSequenceTypeRedisItem.write(value.items, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRedisValue_lift(_ buf: RustBuffer) throws -> RedisValue {
+    return try FfiConverterTypeRedisValue.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRedisValue_lower(_ value: RedisValue) -> RustBuffer {
+    return FfiConverterTypeRedisValue.lower(value)
 }
 
 
@@ -4783,6 +5267,11 @@ public enum Engine: Equatable, Hashable {
      * (libsql://…, https://…) and `password` its auth token.
      */
     case libsql
+    /**
+     * Redis or Valkey. `user` is an ACL user (empty for the default), and
+     * `database` the logical database to start in ("0").
+     */
+    case redis
 
 
 
@@ -4812,6 +5301,8 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         
         case 4: return .libsql
         
+        case 5: return .redis
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -4834,6 +5325,10 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         
         case .libsql:
             writeInt(&buf, Int32(4))
+        
+        
+        case .redis:
+            writeInt(&buf, Int32(5))
         
         }
     }
@@ -5361,6 +5856,302 @@ public func FfiConverterTypeKeywordCase_lower(_ value: KeywordCase) -> RustBuffe
 
 
 /**
+ * One change from the value viewer, reviewed as commands before it runs.
+ */
+
+public enum RedisChange: Equatable, Hashable {
+    
+    case setString(key: String, value: String
+    )
+    case setField(key: String, field: String, value: String
+    )
+    case deleteField(key: String, field: String
+    )
+    case setListItem(key: String, index: Int64, value: String
+    )
+    case pushListItem(key: String, value: String
+    )
+    /**
+     * Removes the first element equal to `value`.
+     */
+    case removeListItem(key: String, value: String
+    )
+    case addMember(key: String, member: String, score: Double?
+    )
+    case removeMember(key: String, member: String, sorted: Bool
+    )
+    case deleteKey(key: String
+    )
+    case renameKey(key: String, newName: String
+    )
+    /**
+     * None removes the expiry.
+     */
+    case setTtl(key: String, seconds: Int64?
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RedisChange: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRedisChange: FfiConverterRustBuffer {
+    typealias SwiftType = RedisChange
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RedisChange {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .setString(key: try FfiConverterString.read(from: &buf), value: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 2: return .setField(key: try FfiConverterString.read(from: &buf), field: try FfiConverterString.read(from: &buf), value: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 3: return .deleteField(key: try FfiConverterString.read(from: &buf), field: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 4: return .setListItem(key: try FfiConverterString.read(from: &buf), index: try FfiConverterInt64.read(from: &buf), value: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 5: return .pushListItem(key: try FfiConverterString.read(from: &buf), value: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 6: return .removeListItem(key: try FfiConverterString.read(from: &buf), value: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 7: return .addMember(key: try FfiConverterString.read(from: &buf), member: try FfiConverterString.read(from: &buf), score: try FfiConverterOptionDouble.read(from: &buf)
+        )
+        
+        case 8: return .removeMember(key: try FfiConverterString.read(from: &buf), member: try FfiConverterString.read(from: &buf), sorted: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 9: return .deleteKey(key: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 10: return .renameKey(key: try FfiConverterString.read(from: &buf), newName: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 11: return .setTtl(key: try FfiConverterString.read(from: &buf), seconds: try FfiConverterOptionInt64.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: RedisChange, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .setString(key,value):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterString.write(value, into: &buf)
+            
+        
+        case let .setField(key,field,value):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterString.write(field, into: &buf)
+            FfiConverterString.write(value, into: &buf)
+            
+        
+        case let .deleteField(key,field):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterString.write(field, into: &buf)
+            
+        
+        case let .setListItem(key,index,value):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterInt64.write(index, into: &buf)
+            FfiConverterString.write(value, into: &buf)
+            
+        
+        case let .pushListItem(key,value):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterString.write(value, into: &buf)
+            
+        
+        case let .removeListItem(key,value):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterString.write(value, into: &buf)
+            
+        
+        case let .addMember(key,member,score):
+            writeInt(&buf, Int32(7))
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterString.write(member, into: &buf)
+            FfiConverterOptionDouble.write(score, into: &buf)
+            
+        
+        case let .removeMember(key,member,sorted):
+            writeInt(&buf, Int32(8))
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterString.write(member, into: &buf)
+            FfiConverterBool.write(sorted, into: &buf)
+            
+        
+        case let .deleteKey(key):
+            writeInt(&buf, Int32(9))
+            FfiConverterString.write(key, into: &buf)
+            
+        
+        case let .renameKey(key,newName):
+            writeInt(&buf, Int32(10))
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterString.write(newName, into: &buf)
+            
+        
+        case let .setTtl(key,seconds):
+            writeInt(&buf, Int32(11))
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterOptionInt64.write(seconds, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRedisChange_lift(_ buf: RustBuffer) throws -> RedisChange {
+    return try FfiConverterTypeRedisChange.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRedisChange_lower(_ value: RedisChange) -> RustBuffer {
+    return FfiConverterTypeRedisChange.lower(value)
+}
+
+
+
+
+public enum RedisKeyKind: Equatable, Hashable {
+    
+    case string
+    case hash
+    case list
+    case set
+    case sortedSet
+    case stream
+    case json
+    /**
+     * A module's type, or one TablePort doesn't show.
+     */
+    case other
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RedisKeyKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRedisKeyKind: FfiConverterRustBuffer {
+    typealias SwiftType = RedisKeyKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RedisKeyKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .string
+        
+        case 2: return .hash
+        
+        case 3: return .list
+        
+        case 4: return .set
+        
+        case 5: return .sortedSet
+        
+        case 6: return .stream
+        
+        case 7: return .json
+        
+        case 8: return .other
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: RedisKeyKind, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .string:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .hash:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .list:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .set:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .sortedSet:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .stream:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .json:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .other:
+            writeInt(&buf, Int32(8))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRedisKeyKind_lift(_ buf: RustBuffer) throws -> RedisKeyKind {
+    return try FfiConverterTypeRedisKeyKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRedisKeyKind_lower(_ value: RedisKeyKind) -> RustBuffer {
+    return FfiConverterTypeRedisKeyKind.lower(value)
+}
+
+
+
+/**
  * The kinds of relation the sidebar lists, from `pg_class.relkind`.
  */
 
@@ -5853,6 +6644,30 @@ fileprivate struct FfiConverterOptionInt64: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionDouble: FfiConverterRustBuffer {
+    typealias SwiftType = Double?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterDouble.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterDouble.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -6355,6 +7170,81 @@ fileprivate struct FfiConverterSequenceTypeNewTableColumn: FfiConverterRustBuffe
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeRedisDatabase: FfiConverterRustBuffer {
+    typealias SwiftType = [RedisDatabase]
+
+    public static func write(_ value: [RedisDatabase], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeRedisDatabase.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [RedisDatabase] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [RedisDatabase]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeRedisDatabase.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeRedisItem: FfiConverterRustBuffer {
+    typealias SwiftType = [RedisItem]
+
+    public static func write(_ value: [RedisItem], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeRedisItem.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [RedisItem] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [RedisItem]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeRedisItem.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeRedisKey: FfiConverterRustBuffer {
+    typealias SwiftType = [RedisKey]
+
+    public static func write(_ value: [RedisKey], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeRedisKey.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [RedisKey] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [RedisKey]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeRedisKey.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeRelation: FfiConverterRustBuffer {
     typealias SwiftType = [Relation]
 
@@ -6522,6 +7412,31 @@ fileprivate struct FfiConverterSequenceTypeSchemaContents: FfiConverterRustBuffe
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeSchemaContents.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeRedisChange: FfiConverterRustBuffer {
+    typealias SwiftType = [RedisChange]
+
+    public static func write(_ value: [RedisChange], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeRedisChange.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [RedisChange] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [RedisChange]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeRedisChange.read(from: &buf))
         }
         return seq
     }
@@ -6789,6 +7704,17 @@ public func startMcpServer(socketPath: String, version: String, host: McpHost)th
 })
 }
 /**
+ * The commands for review, as redis-cli lines.
+ */
+public func redisChangeCommands(changes: [RedisChange])throws  -> [String]  {
+    return try  FfiConverterSequenceString.lift(try rustCallWithError(FfiConverterTypeDatabaseError_lift) {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_func_redis_change_commands(
+        FfiConverterSequenceTypeRedisChange.lower(changes),uniffiCallStatus
+    )
+})
+}
+/**
  * [`GRID_CELL_LIMIT`] for Swift, which UniFFI doesn't export constants to.
  */
 public func gridCellLimit() -> UInt32  {
@@ -7008,6 +7934,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tableport_core_checksum_func_start_mcp_server() != 57500) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_tableport_core_checksum_func_redis_change_commands() != 37514) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_tableport_core_checksum_func_grid_cell_limit() != 9110) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -7081,6 +8010,21 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_method_databasesession_run_query() != 38690) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_method_databasesession_redis_apply() != 1176) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_method_databasesession_redis_command() != 40582) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_method_databasesession_redis_databases() != 32238) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_method_databasesession_redis_scan() != 9242) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_method_databasesession_redis_value() != 44714) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_method_databasesession_columns() != 63698) {

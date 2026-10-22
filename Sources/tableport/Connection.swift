@@ -102,6 +102,7 @@ extension Engine: Codable {
         case .sqlite: "sqlite"
         case .mysql: "mysql"
         case .libsql: "libsql"
+        case .redis: "redis"
         }
     }
 
@@ -111,6 +112,7 @@ extension Engine: Codable {
         case "sqlite": .sqlite
         case "mysql": .mysql
         case "libsql": .libsql
+        case "redis": .redis
         default: .postgres
         }
     }
@@ -126,6 +128,7 @@ extension Engine: Codable {
         case .sqlite: "SQLite"
         case .mysql: "MySQL"
         case .libsql: "libSQL"
+        case .redis: "Redis"
         }
     }
 

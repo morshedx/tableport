@@ -106,3 +106,13 @@ fn awkward_hosts_and_passwords() {
     let params = parse_connection_url("postgres:///d?host=db.internal&port=7000&user=me").unwrap();
     assert_eq!((params.host, params.port, params.user), (some("db.internal"), Some(7000), some("me")));
 }
+
+#[test]
+fn redis_urls() {
+    let parsed = parse_connection_url("rediss://default:secret@cache.example.com:6380/2").unwrap();
+    assert_eq!(parsed.engine, Engine::Redis);
+    assert_eq!((parsed.user, parsed.password), (some("default"), some("secret")));
+    assert_eq!((parsed.port, parsed.database, parsed.tls), (Some(6380), some("2"), Some(TlsMode::Require)));
+    let parsed = parse_connection_url("redis://localhost").unwrap();
+    assert_eq!((parsed.port, parsed.tls), (Some(6379), None));
+}
