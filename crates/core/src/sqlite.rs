@@ -108,6 +108,151 @@ impl SqliteLink {
         .await
     }
 
+    /// The query editor's Run: each statement in turn, as one transaction
+    /// unless the SQL manages its own (BEGIN, COMMIT…). Keeps the first
+    /// `max_rows` rows of each result and counts the rest.
+    pub(crate) async fn run_query(&self, sql: String, max_rows: u64) -> Result<crate::query::QueryResult, DatabaseError> {
+        use crate::query::{cut, QueryResult, ResultSet};
+        let statements = crate::sql_text::statements(&sql);
+        let verbs = crate::sql_text::statement_verbs(&sql);
+        let manages_transaction =
+            verbs.iter().any(|verb| matches!(verb.as_str(), "BEGIN" | "COMMIT" | "END" | "ROLLBACK" | "SAVEPOINT" | "RELEASE"));
+        self.with(move |connection| {
+            let start = std::time::Instant::now();
+            let transaction = if manages_transaction {
+                None
+            } else {
+                Some(connection.unchecked_transaction().map_err(|error| sqlite_error(&error))?)
+            };
+            let mut result_sets = Vec::new();
+            let mut statement_counts = Vec::new();
+            for source in &statements {
+                let mut statement = connection.prepare(source).map_err(|error| sqlite_error(&error))?;
+                let count = statement.column_count();
+                if count == 0 {
+                    statement.raw_execute().map_err(|error| sqlite_error(&error))?;
+                    statement_counts.push(connection.changes());
+                    continue;
+                }
+                let columns: Vec<String> = statement.column_names().into_iter().map(str::to_string).collect();
+                // Declared types first; for expressions, the first value's type.
+                let mut numeric: Vec<Option<bool>> = statement
+                    .columns()
+                    .iter()
+                    .map(|column| column.decl_type().map(|declared| is_numeric_type(declared)))
+                    .collect();
+                let mut rows = statement.query([]).map_err(|error| sqlite_error(&error))?;
+                let mut kept = Vec::new();
+                let mut total = 0u64;
+                while let Some(row) = rows.next().map_err(|error| sqlite_error(&error))? {
+                    if total < max_rows {
+                        let mut values = Vec::with_capacity(count);
+                        for index in 0..count {
+                            let value = row.get_ref(index).map_err(|error| sqlite_error(&error))?;
+                            if numeric[index].is_none() && !matches!(value, ValueRef::Null) {
+                                numeric[index] = Some(matches!(value, ValueRef::Integer(_) | ValueRef::Real(_)));
+                            }
+                            values.push(text(value).as_deref().map(cut));
+                        }
+                        kept.push(values);
+                    }
+                    total += 1;
+                }
+                statement_counts.push(total);
+                result_sets.push(ResultSet {
+                    columns,
+                    rows: kept,
+                    total_rows: total,
+                    numeric_columns: numeric.into_iter().map(|is| is.unwrap_or(false)).collect(),
+                });
+            }
+            if let Some(transaction) = transaction {
+                transaction.commit().map_err(|error| sqlite_error(&error))?;
+            }
+            Ok(QueryResult {
+                result_sets,
+                statement_counts,
+                statement_verbs: verbs,
+                elapsed_ms: start.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+            })
+        })
+        .await
+    }
+
+    /// Writes the rows of `select` to `path` as CSV, JSON or INSERT
+    /// statements, a row at a time, and returns how many it wrote.
+    pub(crate) async fn export(
+        &self,
+        select: String,
+        columns: Vec<Column>,
+        relation: Relation,
+        format: crate::export::ExportFormat,
+        path: String,
+    ) -> Result<u64, DatabaseError> {
+        use crate::export::ExportFormat;
+        use std::io::Write;
+        self.with(move |connection| {
+            let file = std::fs::File::create(&path).map_err(|error| DatabaseError::new(format!("Can't create {path}: {error}.")))?;
+            let mut out = std::io::BufWriter::new(file);
+            let write_error = |error: std::io::Error| DatabaseError::new(format!("Can't write {path}: {error}."));
+            let mut statement = connection.prepare(&select).map_err(|error| sqlite_error(&error))?;
+            let names: Vec<String> = statement.column_names().into_iter().map(str::to_string).collect();
+            let mut rows = statement.query([]).map_err(|error| sqlite_error(&error))?;
+            let target = relation.quoted_name();
+            let quoted_names = if columns.is_empty() { names.clone() } else { columns.iter().map(|c| c.name.clone()).collect() }
+                .iter()
+                .map(|name| quote_identifier(name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut count = 0u64;
+            if format == ExportFormat::Csv {
+                writeln!(out, "{}", names.iter().map(|name| csv_field(name)).collect::<Vec<_>>().join(",")).map_err(write_error)?;
+            }
+            if format == ExportFormat::Json {
+                out.write_all(b"[").map_err(write_error)?;
+            }
+            while let Some(row) = rows.next().map_err(|error| sqlite_error(&error))? {
+                let values = (0..names.len())
+                    .map(|index| row.get_ref(index).map_err(|error| sqlite_error(&error)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                match format {
+                    ExportFormat::Csv => {
+                        let line = values.iter().map(|value| text(*value).as_deref().map(csv_field).unwrap_or_default()).collect::<Vec<_>>();
+                        writeln!(out, "{}", line.join(",")).map_err(write_error)?;
+                    }
+                    ExportFormat::Json => {
+                        let object: serde_json::Map<String, serde_json::Value> =
+                            names.iter().cloned().zip(values.iter().map(|value| json(*value))).collect();
+                        let separator = if count == 0 { "\n  " } else { ",\n  " };
+                        write!(out, "{separator}{}", serde_json::Value::Object(object)).map_err(write_error)?;
+                    }
+                    ExportFormat::Sql => {
+                        let literals = values
+                            .iter()
+                            .map(|value| match value {
+                                ValueRef::Null => Ok("NULL".to_string()),
+                                ValueRef::Integer(number) => Ok(number.to_string()),
+                                ValueRef::Real(number) => Ok(real(*number)),
+                                ValueRef::Blob(bytes) => {
+                                    Ok(format!("X'{}'", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()))
+                                }
+                                ValueRef::Text(_) => quote_literal(&text(*value).unwrap_or_default()),
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        writeln!(out, "INSERT INTO {target} ({quoted_names}) VALUES ({});", literals.join(", ")).map_err(write_error)?;
+                    }
+                }
+                count += 1;
+            }
+            if format == ExportFormat::Json {
+                out.write_all(if count == 0 { b"]\n" } else { b"\n]\n" }).map_err(write_error)?;
+            }
+            out.flush().map_err(write_error)?;
+            Ok(count)
+        })
+        .await
+    }
+
     /// Runs statements separated by `;`, discarding rows.
     pub(crate) async fn execute(&self, sql: String) -> Result<(), DatabaseError> {
         self.with(move |connection| connection.execute_batch(&sql).map_err(|error| sqlite_error(&error))).await
@@ -135,9 +280,44 @@ pub(crate) fn text(value: ValueRef<'_>) -> Option<String> {
     match value {
         ValueRef::Null => None,
         ValueRef::Integer(number) => Some(number.to_string()),
-        ValueRef::Real(number) => Some(number.to_string()),
+        ValueRef::Real(number) => Some(real(number)),
         ValueRef::Text(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
         ValueRef::Blob(bytes) => Some(format!("\\x{}", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>())),
+    }
+}
+
+/// A real as SQLite writes it: whole numbers keep `.0` (`1.0`, not `1`),
+/// so the grid, query results and exports agree with SQLite's own CAST.
+fn real(number: f64) -> String {
+    if number.is_finite() && number.fract() == 0.0 && number.abs() < 1e15 {
+        format!("{number:.1}")
+    } else {
+        number.to_string()
+    }
+}
+
+/// Whether SQLite's affinity rules give a declared type a numeric affinity.
+fn is_numeric_type(declared: &str) -> bool {
+    let upper = declared.to_uppercase();
+    ["INT", "REAL", "FLOA", "DOUB", "NUMERIC", "DECIMAL"].iter().any(|word| upper.contains(word))
+}
+
+/// A JSON value with the stored type: numbers stay numbers.
+fn json(value: ValueRef<'_>) -> serde_json::Value {
+    match value {
+        ValueRef::Null => serde_json::Value::Null,
+        ValueRef::Integer(number) => serde_json::Value::from(number),
+        ValueRef::Real(number) => serde_json::Number::from_f64(number).map_or(serde_json::Value::Null, serde_json::Value::Number),
+        _ => text(value).map_or(serde_json::Value::Null, serde_json::Value::String),
+    }
+}
+
+/// RFC 4180 quoting, as the clipboard's CSV.
+fn csv_field(text: &str) -> String {
+    if text.contains([',', '"', '\n', '\r']) || text.starts_with(' ') || text.ends_with(' ') {
+        format!("\"{}\"", text.replace('"', "\"\""))
+    } else {
+        text.to_string()
     }
 }
 
@@ -202,7 +382,7 @@ impl DatabaseSession {
                 let [Some(name), column_type] = <[Option<String>; 2]>::try_from(row).ok()? else { return None };
                 let column_type = column_type.unwrap_or_default();
                 let upper = column_type.to_uppercase();
-                let is_numeric = ["INT", "REAL", "FLOA", "DOUB", "NUMERIC", "DECIMAL"].iter().any(|word| upper.contains(word));
+                let is_numeric = is_numeric_type(&column_type);
                 // Dates are text in SQLite; the date picker writes the forms
                 // SQLite's date functions read.
                 let kind = if upper.contains("TIMESTAMP") || upper.contains("DATETIME") {

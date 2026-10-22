@@ -188,3 +188,56 @@ async fn commits_edits_inserts_and_deletes_all_or_nothing() {
     let error = session.commit(changes, users(), columns, key).await.unwrap_err();
     assert!(error.message().contains("default"), "{error}");
 }
+
+#[tokio::test]
+async fn runs_queries_as_one_transaction() {
+    let file = TempDatabase::new("query", SHOP);
+    let session = DatabaseSession::connect(file.settings(false)).await.unwrap();
+    let result = session
+        .run_query("UPDATE users SET score = score + 1 WHERE id = 1; SELECT id, name, score, 2 * 3 AS six FROM users ORDER BY id".into(), 2)
+        .await
+        .unwrap();
+    assert_eq!(result.statement_verbs, ["UPDATE", "SELECT"]);
+    assert_eq!(result.statement_counts, [1, 4]);
+    let set = &result.result_sets[0];
+    assert_eq!(set.columns, ["id", "name", "score", "six"]);
+    assert_eq!((set.rows.len(), set.total_rows), (2, 4));
+    assert_eq!(set.rows[0][2].as_deref(), Some("10.5"));
+    assert_eq!(set.numeric_columns, [true, false, true, true]);
+
+    // A failing statement undoes the ones before it.
+    let error = session.run_query("DELETE FROM users; SELECT * FROM no_such_table".into(), 10).await.unwrap_err();
+    assert!(error.message().contains("no_such_table"), "{error}");
+    let count = session.run_query("SELECT count(*) FROM users".into(), 1).await.unwrap();
+    assert_eq!(count.result_sets[0].rows[0][0].as_deref(), Some("4"));
+}
+
+#[tokio::test]
+async fn exports_and_reads_full_values() {
+    use tableport_core::{ExportFormat, ExportScope};
+    let file = TempDatabase::new("export", SHOP);
+    let session = DatabaseSession::connect(file.settings(false)).await.unwrap();
+    let columns = session.columns(users()).await.unwrap();
+    let key = vec!["id".to_string()];
+    let out = |format: &str| std::env::temp_dir().join(format!("tableport-export-{}.{format}", std::process::id()));
+    for (format, path) in [(ExportFormat::Csv, out("csv")), (ExportFormat::Json, out("json")), (ExportFormat::Sql, out("sql"))] {
+        let written = session
+            .export_rows(users(), columns.clone(), vec![], None, key.clone(), ExportScope::All, format, path.to_string_lossy().into())
+            .await
+            .unwrap();
+        assert_eq!(written, 4);
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        match format {
+            ExportFormat::Csv => assert!(text.starts_with("id,name,score,joined,avatar,team_id\n1,Ada,9.5,2024-01-02,\\xcafe,1\n"), "{text}"),
+            ExportFormat::Json => {
+                let rows: serde_json::Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(rows[0]["score"], serde_json::json!(9.5));
+                assert_eq!(rows[2]["score"], serde_json::Value::Null);
+            }
+            ExportFormat::Sql => assert!(text.contains("VALUES (4, '100% sure', 1.0, NULL, NULL, 1);"), "{text}"),
+        }
+    }
+    let full = session.full_rows(users(), columns, key, vec![vec!["1".into()]]).await.unwrap();
+    assert_eq!(full[0][4].as_deref(), Some("\\xcafe"));
+}

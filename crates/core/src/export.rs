@@ -51,6 +51,9 @@ impl DatabaseSession {
         if format == ExportFormat::Sql && columns.is_empty() {
             return Err(DatabaseError::new("The table's columns are not loaded yet."));
         }
+        if let Some(link) = self.sqlite() {
+            return on_runtime(async move { link.export(select, columns, relation, format, path).await }).await;
+        }
         let client = self.client()?;
         let endpoint = self.settings().endpoint();
         on_runtime(async move {
@@ -142,12 +145,14 @@ impl DatabaseSession {
         if primary_key.is_empty() {
             return Err(DatabaseError::new("The table has no primary key, so its rows can't be read again."));
         }
-        let key_list = primary_key.iter().map(|name| format!("{}::text", quote_identifier(name))).collect::<Vec<_>>().join(", ");
-        let value_list = columns.iter().map(|column| format!("{}::text", quote_identifier(&column.name))).collect::<Vec<_>>().join(", ");
+        let dialect = self.dialect();
+        let key_list = primary_key.iter().map(|name| dialect.text(&quote_identifier(name))).collect::<Vec<_>>().join(", ");
+        let value_list =
+            columns.iter().map(|column| dialect.full_text(&quote_identifier(&column.name))).collect::<Vec<_>>().join(", ");
         let sql = format!(
             "SELECT {key_list}, {value_list} FROM {} WHERE {}",
             relation.quoted_name(),
-            keys_condition(&primary_key, &keys)?
+            keys_condition(&primary_key, &keys, dialect)?
         );
         let rows = self.text_rows(sql).await?;
         let width = primary_key.len();
@@ -185,7 +190,7 @@ fn select_sql(
             if primary_key.is_empty() {
                 return Err(DatabaseError::new("The table has no primary key, so selected rows can't be exported."));
             }
-            sql += &format!(" WHERE {}", keys_condition(primary_key, keys)?);
+            sql += &format!(" WHERE {}", keys_condition(primary_key, keys, dialect)?);
         }
         ExportScope::All | ExportScope::Page { .. } => sql += &where_clause(filters, columns, dialect)?,
     }
@@ -203,11 +208,11 @@ fn select_sql(
 
 /// `(a::text, b::text) IN (('1', 'x'), …)`; compared as text, as the grid
 /// holds the keys.
-fn keys_condition(primary_key: &[String], keys: &[Vec<String>]) -> Result<String, DatabaseError> {
+fn keys_condition(primary_key: &[String], keys: &[Vec<String>], dialect: Dialect) -> Result<String, DatabaseError> {
     if keys.is_empty() {
         return Ok("false".to_string());
     }
-    let columns = primary_key.iter().map(|name| format!("{}::text", quote_identifier(name))).collect::<Vec<_>>().join(", ");
+    let columns = primary_key.iter().map(|name| dialect.text(&quote_identifier(name))).collect::<Vec<_>>().join(", ");
     let tuples = keys
         .iter()
         .map(|key| {

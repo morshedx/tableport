@@ -231,7 +231,7 @@ pub(crate) enum Dialect {
 
 impl Dialect {
     /// The value as text.
-    fn text(self, expression: &str) -> String {
+    pub(crate) fn text(self, expression: &str) -> String {
         match self {
             Dialect::Postgres => format!("{expression}::text"),
             Dialect::Sqlite => format!("CAST({expression} AS TEXT)"),
@@ -247,6 +247,17 @@ impl Dialect {
                 "CASE WHEN typeof({column}) = 'blob' THEN '\\x' || lower(hex({column})) \
                  ELSE substr(CAST({column} AS TEXT), 1, {GRID_CELL_LIMIT}) END"
             ),
+        }
+    }
+
+    /// The whole value as text, for copies and full values: SQLite blobs
+    /// as `\\x…` hex.
+    pub(crate) fn full_text(self, column: &str) -> String {
+        match self {
+            Dialect::Postgres => format!("{column}::text"),
+            Dialect::Sqlite => {
+                format!("CASE WHEN typeof({column}) = 'blob' THEN '\\x' || lower(hex({column})) ELSE CAST({column} AS TEXT) END")
+            }
         }
     }
 

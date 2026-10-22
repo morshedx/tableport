@@ -42,6 +42,9 @@ impl DatabaseSession {
         if sql.trim().is_empty() {
             return Err(DatabaseError::new("There is no SQL to run."));
         }
+        if let Some(link) = self.sqlite() {
+            return on_runtime(async move { link.run_query(sql, max_rows).await }).await;
+        }
         let client = self.client()?;
         let endpoint = self.settings().endpoint();
         on_runtime(async move {
@@ -147,7 +150,7 @@ fn is_numeric(column_type: &Type) -> bool {
 }
 
 /// The first GRID_CELL_LIMIT characters, as for table pages.
-fn cut(text: &str) -> String {
+pub(crate) fn cut(text: &str) -> String {
     match text.char_indices().nth(GRID_CELL_LIMIT as usize) {
         Some((index, _)) => text[..index].to_string(),
         None => text.to_string(),
