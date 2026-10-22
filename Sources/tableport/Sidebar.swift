@@ -96,7 +96,8 @@ struct SidebarView: View {
             ),
             openRelationID: sidebar.openRelationID,
             onOpen: { id in open(id) },
-            onExpand: { relation in workspace.loadColumns(relation) }
+            onExpand: { relation in workspace.loadColumns(relation) },
+            menuItems: { kind in SidebarActions.items(for: kind, workspace: workspace) }
         )
         .onChange(of: sidebar.schema, initial: true) { _, _ in workspace.loadRoutines() }
     }
@@ -219,6 +220,8 @@ struct SidebarView: View {
         HStack(spacing: 6) {
             Menu {
                 Button("New Query Tab") { workspace.newQuery() }
+                Button("New Table…") { workspace.showsNewTable = true }
+                    .disabled(workspace.connection.readOnly)
                 Button("Refresh") { workspace.reload() }
             } label: {
                 Image(systemName: "plus")
@@ -226,7 +229,7 @@ struct SidebarView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help("New query tab, refresh")
+            .help("New query tab, new table, refresh")
             Picker("Schema", selection: $sidebar.schema) {
                 ForEach(sidebar.schemas) { schema in
                     Text(schema.name).tag(schema.name)
@@ -285,6 +288,8 @@ struct SidebarOutline: NSViewRepresentable {
     let openRelationID: Relation.ID?
     let onOpen: (String) -> Void
     let onExpand: (Relation) -> Void
+    /// The right-click menu for a row.
+    let menuItems: (Node.Kind) -> [NSMenuItem]
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -305,6 +310,11 @@ struct SidebarOutline: NSViewRepresentable {
         outline.dataSource = context.coordinator
         outline.delegate = context.coordinator
         context.coordinator.outline = outline
+        let menu = NSMenu()
+        // Truncate and Drop are disabled on read-only connections.
+        menu.autoenablesItems = false
+        menu.delegate = context.coordinator
+        outline.menu = menu
 
         let scroll = NSScrollView()
         scroll.documentView = outline
@@ -320,6 +330,7 @@ struct SidebarOutline: NSViewRepresentable {
         let coordinator = context.coordinator
         coordinator.onOpen = onOpen
         coordinator.onExpand = onExpand
+        coordinator.menuItems = menuItems
         if coordinator.content != content {
             coordinator.apply(content)
         }
@@ -351,11 +362,20 @@ struct SidebarOutline: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
+    final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
         weak var outline: NSOutlineView?
         var content: Content?
         var onOpen: ((String) -> Void)?
         var onExpand: ((Relation) -> Void)?
+        var menuItems: ((Node.Kind) -> [NSMenuItem])?
+
+        /// Built when it opens, for the row that was right-clicked.
+        func menuNeedsUpdate(_ menu: NSMenu) {
+            menu.removeAllItems()
+            guard let outline, outline.clickedRow >= 0,
+                  let node = outline.item(atRow: outline.clickedRow) as? Node else { return }
+            for item in menuItems?(node.kind) ?? [] { menu.addItem(item) }
+        }
         private var roots: [Node] = []
         /// Relation nodes are kept by ID so expansion and selection survive a
         /// rebuild of the tree, for example while typing a search.
@@ -710,5 +730,186 @@ final class SidebarRowView: NSTableRowView {
         guard selectionHighlightStyle != .none else { return }
         NSColor.labelColor.withAlphaComponent(isEmphasized ? 0.1 : 0.07).setFill()
         NSBezierPath(roundedRect: bounds.insetBy(dx: 6, dy: 1), xRadius: 5, yRadius: 5).fill()
+    }
+}
+
+/// The sidebar's right-click menus. Truncate and Drop show their SQL and ask
+/// first; on a production connection the name must be typed.
+@MainActor
+enum SidebarActions {
+    static func items(for kind: SidebarOutline.Node.Kind, workspace: WorkspaceModel) -> [NSMenuItem] {
+        let canWrite = !workspace.connection.readOnly
+        switch kind {
+        case .relation(let relation):
+            let isTable = [.table, .partitionedTable, .foreignTable].contains(relation.kind)
+            var items: [NSMenuItem] = [
+                ClosureMenuItem(title: "Open") { workspace.open(relation) },
+                ClosureMenuItem(title: "Open Structure") { workspace.openStructure(relation) },
+                ClosureMenuItem(title: isTable ? "Query This Table" : "Query This View") {
+                    workspace.newQuery(sql: "SELECT * FROM \(qualifiedName(relation: relation))\nLIMIT 100;")
+                },
+                .separator(),
+                ClosureMenuItem(title: "Copy Name") { copy(relation.name) },
+                ClosureMenuItem(title: "Copy Qualified Name") { copy(qualifiedName(relation: relation)) },
+                ClosureMenuItem(title: "Export…") { workspace.export(relation) },
+            ]
+            if relation.kind == .materializedView {
+                items.append(.separator())
+                items.append(enabled(canWrite, ClosureMenuItem(title: "Refresh Data") {
+                    workspace.runChange(refreshMaterializedViewSql(relation: relation), refreshing: relation)
+                }))
+            }
+            items.append(.separator())
+            if relation.kind == .table || relation.kind == .partitionedTable {
+                items.append(enabled(canWrite, ClosureMenuItem(title: "Truncate…") { confirmTruncate(relation, workspace) }))
+            }
+            items.append(enabled(canWrite, ClosureMenuItem(title: "Drop…") { confirmDrop(relation, workspace) }))
+            return items
+        case .column(let column):
+            return [ClosureMenuItem(title: "Copy Name") { copy(column.name) }]
+        case .routine(let routine):
+            return [
+                ClosureMenuItem(title: "Open Definition") { workspace.open(routine) },
+                ClosureMenuItem(title: "Copy Name") { copy(routine.name) },
+                .separator(),
+                enabled(canWrite, ClosureMenuItem(title: "Drop…") {
+                    DangerConfirm.run(
+                        title: "Drop \(routine.isProcedure ? "procedure" : "function") \(routine.name)?",
+                        typeToConfirm: workspace.isProduction ? routine.name : nil,
+                        options: ["Cascade"], button: "Drop",
+                        sql: { options in dropRoutineSql(routine: routine, cascade: options[0]) }
+                    ) { sql, _ in workspace.runChange(sql) }
+                }),
+            ]
+        case .section(let title, _) where title == "Tables":
+            return [enabled(canWrite, ClosureMenuItem(title: "New Table…") { workspace.showsNewTable = true })]
+        case .section, .message:
+            return []
+        }
+    }
+
+    private static func confirmTruncate(_ relation: Relation, _ workspace: WorkspaceModel) {
+        DangerConfirm.run(
+            title: "Delete every row of \(relation.name)?",
+            typeToConfirm: workspace.isProduction ? relation.name : nil,
+            options: ["Restart identity (reset sequences)", "Cascade (also tables that reference it)"],
+            button: "Truncate",
+            sql: { options in truncateSql(relation: relation, restartIdentity: options[0], cascade: options[1]) }
+        ) { sql, _ in workspace.runChange(sql, refreshing: relation) }
+    }
+
+    private static func confirmDrop(_ relation: Relation, _ workspace: WorkspaceModel) {
+        DangerConfirm.run(
+            title: "Drop \(relation.name)?",
+            typeToConfirm: workspace.isProduction ? relation.name : nil,
+            options: ["Cascade (also objects that depend on it)"],
+            button: "Drop",
+            sql: { options in dropRelationSql(relation: relation, cascade: options[0]) }
+        ) { sql, _ in workspace.runChange(sql, dropping: relation) }
+    }
+
+    private static func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private static func enabled(_ isEnabled: Bool, _ item: NSMenuItem) -> NSMenuItem {
+        item.isEnabled = isEnabled
+        return item
+    }
+}
+
+/// A confirmation for a change that can't be undone: the SQL it will run,
+/// options that change that SQL, and on production a name to type before
+/// the button works. A sheet on the key window, so it opens where the user
+/// is; `confirmed` gets the SQL to run and the options chosen, and isn't
+/// called on Cancel.
+@MainActor
+enum DangerConfirm {
+    static func run(title: String, typeToConfirm: String?, options: [String], button: String,
+                    sql: @escaping ([Bool]) -> String, confirmed: @escaping (String, [Bool]) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = "This can't be undone. TablePort will run:"
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Cancel")
+        let confirm = alert.addButton(withTitle: button)
+        confirm.hasDestructiveAction = true
+
+        let form = DangerForm(options: options, typeToConfirm: typeToConfirm, sql: sql, confirm: confirm)
+        alert.accessoryView = form.view
+        if let field = form.nameField { alert.window.initialFirstResponder = field }
+        let finish = { (response: NSApplication.ModalResponse) in
+            // The form lives until the answer: it updates the SQL and the button.
+            if response == .alertSecondButtonReturn { confirmed(form.currentSQL, form.options) }
+        }
+        if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+            alert.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            finish(alert.runModal())
+        }
+    }
+}
+
+@MainActor
+private final class DangerForm: NSObject, NSTextFieldDelegate {
+    let view: NSView
+    private(set) var nameField: NSTextField?
+    private let checkboxes: [NSButton]
+    private let sqlLabel = NSTextField(wrappingLabelWithString: "")
+    private let sql: ([Bool]) -> String
+    private let typeToConfirm: String?
+    private let confirm: NSButton
+
+    init(options: [String], typeToConfirm: String?, sql: @escaping ([Bool]) -> String, confirm: NSButton) {
+        self.sql = sql
+        self.typeToConfirm = typeToConfirm
+        self.confirm = confirm
+        checkboxes = options.map { NSButton(checkboxWithTitle: $0, target: nil, action: nil) }
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        view = stack
+        super.init()
+
+        sqlLabel.font = AppFont.mono(size: 12)
+        sqlLabel.isSelectable = true
+        sqlLabel.preferredMaxLayoutWidth = 300
+        stack.addArrangedSubview(sqlLabel)
+        for checkbox in checkboxes {
+            checkbox.target = self
+            checkbox.action = #selector(update)
+            stack.addArrangedSubview(checkbox)
+        }
+        if let typeToConfirm {
+            let hint = NSTextField(wrappingLabelWithString: "This is a production connection. Type \(typeToConfirm) to confirm.")
+            hint.font = .systemFont(ofSize: 11)
+            hint.textColor = .secondaryLabelColor
+            hint.preferredMaxLayoutWidth = 300
+            let field = NSTextField()
+            field.placeholderString = typeToConfirm
+            field.delegate = self
+            field.translatesAutoresizingMaskIntoConstraints = false
+            field.widthAnchor.constraint(equalToConstant: 300).isActive = true
+            stack.addArrangedSubview(hint)
+            stack.addArrangedSubview(field)
+            nameField = field
+        }
+        stack.frame = NSRect(origin: .zero, size: stack.fittingSize)
+        update()
+    }
+
+    var options: [Bool] { checkboxes.map { $0.state == .on } }
+    var currentSQL: String { sql(options) }
+
+    @objc private func update() {
+        sqlLabel.stringValue = currentSQL
+        confirm.isEnabled = typeToConfirm.map { nameField?.stringValue == $0 } ?? true
+        view.frame.size = view.fittingSize
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        update()
     }
 }

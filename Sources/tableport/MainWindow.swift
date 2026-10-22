@@ -45,6 +45,9 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var databases: [String] = []
     @Published private(set) var switchError: String?
     @Published var tabs: [Tab] = []
+    /// The quick open overlay (⌘P).
+    @Published var showsQuickOpen = false
+    @Published var showsNewTable = false
 
     @Published var selectedTab: Tab.ID? {
         didSet {
@@ -306,6 +309,50 @@ final class WorkspaceModel: ObservableObject {
         return tab.title
     }
 
+    var isProduction: Bool { connection.tag == .production }
+
+    /// Opens a table on its Structure tab.
+    func openStructure(_ relation: Relation) {
+        open(relation)
+        tableModel(for: relation).view = .structure
+    }
+
+    /// Opens a table and its export sheet.
+    func export(_ relation: Relation) {
+        open(relation)
+        let table = tableModel(for: relation)
+        table.view = .data
+        table.isExportSheetShown = true
+    }
+
+    /// Runs a schema or data change from the sidebar (Truncate, Drop,
+    /// Refresh), then reloads what it touched: the sidebar, and the open tab
+    /// of `refreshing`; a dropped relation's tab closes.
+    func runChange(_ sql: String, refreshing: Relation? = nil, dropping: Relation? = nil) {
+        let session = session
+        Task {
+            do {
+                try await session.execute(sql: sql)
+                if let dropping { close(.relation(dropping)) }
+                if let refreshing, tableModels[Tab.relation(refreshing).id] != nil {
+                    pageCache[refreshing.id] = nil
+                    tableModel(for: refreshing).reload()
+                }
+                reload()
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "The change failed"
+                alert.informativeText = error.displayMessage
+                alert.alertStyle = .warning
+                if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+                    alert.beginSheetModal(for: window) { _ in }
+                } else {
+                    alert.runModal()
+                }
+            }
+        }
+    }
+
     /// Opens a saved query; one already open is brought forward instead.
     func open(_ saved: SavedQuery) {
         if let (id, _) = queryModels.first(where: { $0.value.savedQuery?.id == saved.id }) {
@@ -518,6 +565,21 @@ struct WorkspaceView: View {
         }
         .background(Theme.windowBg)
         .ignoresSafeArea(edges: .top)
+        .sheet(isPresented: $model.showsNewTable) {
+            NewTableSheet(workspace: model)
+        }
+        .overlay(alignment: .top) {
+            if model.showsQuickOpen {
+                ZStack(alignment: .top) {
+                    // A click outside closes it.
+                    Color.black.opacity(0.06)
+                        .contentShape(Rectangle())
+                        .onTapGesture { model.showsQuickOpen = false }
+                    QuickOpenView(model: model, sidebar: model.sidebar, saved: model.savedQueries)
+                        .padding(.top, 70)
+                }
+            }
+        }
     }
 }
 

@@ -60,7 +60,10 @@ final class TableTabModel: ObservableObject {
     /// Per tab, so one tab's filter row doesn't show in another.
     @Published var showsFilters = false
     /// The row panel on the right (Space), and the page row it shows.
-    @Published var showsInspector = false
+    /// The row panel stays open or closed for every table, as in TablePlus.
+    @Published var showsInspector = UserDefaults.standard.bool(forKey: "showsRowPanel") {
+        didSet { UserDefaults.standard.set(showsInspector, forKey: "showsRowPanel") }
+    }
     @Published var inspectedRow: Int?
     @Published var view: TableView = .data
     /// The selected page rows, for copy and export. Not published: the grid
@@ -285,6 +288,20 @@ final class TableTabModel: ObservableObject {
         } else {
             deletes.formUnion(keys)
         }
+    }
+
+    /// Applies a change from the Structure view, then reloads the structure
+    /// and the page: columns may have been added, renamed or dropped.
+    func applyStructure(_ change: StructureChange) async throws {
+        try await session.applyStructureChange(relation: relation, change: change)
+        structureTask?.cancel()
+        structureTask = nil
+        structure = nil
+        loadStructure()
+        // Read the columns and the key again with the next page.
+        columns = []
+        primaryKey = []
+        reload()
     }
 
     func loadStructure() {
@@ -529,6 +546,8 @@ struct TableTabView: View {
     @ObservedObject var model: TableTabModel
     /// Opens the referenced table filtered to the clicked value.
     let onFollow: (ForeignKey, String) -> Void
+    /// The row panel's width, the same for every table.
+    @AppStorage("rowPanelWidth") private var inspectorWidth = 340.0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -542,10 +561,10 @@ struct TableTabView: View {
                 HStack(spacing: 0) {
                     grid
                     if model.showsInspector {
-                        Divider()
-                        RowInspector(model: model)
+                        PanelResizeHandle(width: $inspectorWidth)
+                        RowInspector(model: model, onFollow: onFollow)
                             .id(model.relation.id)
-                            .frame(width: 320)
+                            .frame(width: inspectorWidth)
                     }
                 }
             case .structure:
@@ -895,8 +914,11 @@ struct ReviewChangesSheet: View {
 /// The selected row as a list of fields, after TablePlus' row panel: column
 /// name and type over each value, a search field, and editing that goes into
 /// the tab's pending changes.
+/// The row panel (Space): the selected row as a form, as in TablePlus. Each
+/// field edits as a pending change, like a cell.
 private struct RowInspector: View {
     @ObservedObject var model: TableTabModel
+    let onFollow: (ForeignKey, String) -> Void
     @State private var search = ""
 
     var body: some View {
@@ -906,11 +928,13 @@ private struct RowInspector: View {
                 .padding(8)
             Divider()
             if let row = model.inspectedRow, model.rows.indices.contains(row) {
+                header(row)
+                Divider()
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 10) {
+                    LazyVStack(alignment: .leading, spacing: 12) {
                         ForEach(Array(model.columns.enumerated()), id: \.element.name) { index, column in
                             if search.isEmpty || column.name.localizedCaseInsensitiveContains(search) {
-                                InspectorField(model: model, row: row, column: index)
+                                InspectorField(model: model, row: row, column: index, onFollow: onFollow)
                             }
                         }
                     }
@@ -925,50 +949,160 @@ private struct RowInspector: View {
         }
         .background(Theme.card)
     }
+
+    /// Which row this is, and why it can't be edited when it can't.
+    private func header(_ row: Int) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Row \((model.offset + row + 1).formatted())")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.ink)
+            if let key = model.key(ofRow: row) {
+                Text(zip(model.primaryKey, key).map { "\($0) = \($1)" }.joined(separator: ", "))
+                    .font(AppFont.monoFont(size: 11))
+                    .foregroundStyle(Theme.inkSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            if let reason = readOnlyReason(row) {
+                Label(reason, systemImage: "lock")
+                    .font(Theme.meta)
+                    .foregroundStyle(Theme.inkSecondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+    }
+
+    private func readOnlyReason(_ row: Int) -> String? {
+        if model.isReadOnly { return "Read-only connection" }
+        if !model.canAddRows { return "Views can't be edited" }
+        if model.primaryKey.isEmpty { return "Read-only: the table has no primary key" }
+        if model.isDeleted(row: row) { return "Marked for delete" }
+        return nil
+    }
 }
 
+/// One field of the row panel: the column's name and type, a control that
+/// fits its kind (a picker for booleans and enums, a tall editor for JSON
+/// and long text), and an arrow that follows a foreign key.
 private struct InspectorField: View {
     @ObservedObject var model: TableTabModel
     let row: Int
     let column: Int
+    let onFollow: (ForeignKey, String) -> Void
     @State private var text = ""
+    /// The whole value, read from the server, when the page holds it cut.
+    @State private var fullText: String?
+    @State private var isLoadingFull = false
+    @State private var loadError: String?
     @FocusState private var focused: Bool
 
     private var info: Column { model.columns[column] }
     private var stored: String? { model.rows[row].indices.contains(column) ? model.rows[row][column] : nil }
     private var edit: CellDraft? { model.edits(ofRow: row)[column] }
-    private var shown: CellDraft { edit ?? stored.map { .value(text: $0) } ?? .null }
-    /// Cut values (2,000+ characters) would be saved cut, so they stay read-only.
+    private var shown: CellDraft { edit ?? (fullText ?? stored).map { .value(text: $0) } ?? .null }
+    private var isCut: Bool { (stored?.count ?? 0) >= Grid.cellLimit && fullText == nil }
+    private var isJSON: Bool { info.columnType.hasPrefix("json") }
+    /// Cut values would be saved cut, so they stay read-only until loaded whole.
     private var editable: Bool {
-        model.canEditRows && !model.isDeleted(row: row) && (stored?.count ?? 0) < Grid.cellLimit
+        model.canEditRows && !model.isDeleted(row: row) && !isCut
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Text(info.name).font(Theme.meta).foregroundStyle(Theme.inkSecondary)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Text(info.name)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.ink)
+                if let key = model.foreignKeys[info.name], let value = stored {
+                    Button {
+                        onFollow(key, value)
+                    } label: {
+                        Image(systemName: "arrow.right.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Open \(key.referencedRelation.name) where \(key.referencedColumn) = \(value)")
+                }
                 Spacer()
-                Text(info.columnType).font(Theme.meta).foregroundStyle(Theme.inkSecondary)
+                Text(info.columnType)
+                    .font(Theme.meta)
+                    .foregroundStyle(Theme.inkSecondary)
+                    .lineLimit(1)
             }
+            control
+                .background(edit == nil ? Color.clear : Color.yellow.opacity(0.25))
+                .contextMenu { menu }
+            if isCut {
+                HStack(spacing: 6) {
+                    Text("Shortened in the grid")
+                    Button(isLoadingFull ? "Loading…" : "Load full value", action: loadFull)
+                        .buttonStyle(.link)
+                        .disabled(isLoadingFull || model.primaryKey.isEmpty)
+                }
+                .font(Theme.meta)
+                .foregroundStyle(Theme.inkSecondary)
+            }
+            if let loadError {
+                Text(loadError).font(Theme.meta).foregroundStyle(Theme.danger)
+            }
+        }
+        .onAppear(perform: load)
+        .onChange(of: row) { _, _ in
+            fullText = nil
+            loadError = nil
+            load()
+        }
+        .onChange(of: model.changeToken) { _, _ in if !focused { load() } }
+        .onChange(of: focused) { _, isFocused in if !isFocused { save() } }
+    }
+
+    @ViewBuilder
+    private var control: some View {
+        switch info.kind {
+        case .boolean:
+            choice(["true", "false"])
+        case .enum:
+            choice(info.enumValues)
+        default:
             TextField(placeholder, text: $text, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .font(AppFont.monoFont(size: 12))
-                .lineLimit(1...6)
+                // JSON and long text get room; ⌥↩ adds a line, ↩ saves.
+                .lineLimit(isJSON || text.count > 120 ? 4...18 : 1...6)
                 .disabled(!editable)
                 .focused($focused)
                 .onSubmit(save)
-                .background(edit == nil ? Color.clear : Color.yellow.opacity(0.25))
-                .contextMenu {
-                    if editable {
-                        Button("Set NULL") { model.setCell(.null, row: row, column: column) }
-                        if edit != nil { Button("Revert") { model.setCell(nil, row: row, column: column) } }
-                    }
-                }
         }
-        .onAppear(perform: load)
-        .onChange(of: row) { _, _ in load() }
-        .onChange(of: model.changeToken) { _, _ in if !focused { load() } }
-        .onChange(of: focused) { _, isFocused in if !isFocused { save() } }
+    }
+
+    /// A pop-up of the allowed values, plus NULL.
+    private func choice(_ values: [String]) -> some View {
+        Picker(info.name, selection: Binding(
+            get: { GridCellPaint.text(for: shown) ?? "NULL" },
+            set: { value in
+                model.setCell(value == "NULL" ? .null : .value(text: value), row: row, column: column)
+            }
+        )) {
+            ForEach(values, id: \.self) { Text($0).tag($0) }
+            Divider()
+            Text("NULL").tag("NULL")
+        }
+        .labelsHidden()
+        .disabled(!editable)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var menu: some View {
+        Button("Copy Value") { copy(GridCellPaint.text(for: shown) ?? "") }
+            .disabled(isCut)
+        Button("Copy Name") { copy(info.name) }
+        if editable {
+            Divider()
+            Button("Set NULL") { model.setCell(.null, row: row, column: column) }
+            if edit != nil { Button("Revert") { model.setCell(nil, row: row, column: column) } }
+        }
     }
 
     private var placeholder: String {
@@ -977,15 +1111,71 @@ private struct InspectorField: View {
         return ""
     }
 
+    /// JSON shows indented; saving compares with what was shown, so only a
+    /// real change becomes an edit.
+    private func displayText() -> String {
+        let value = GridCellPaint.text(for: shown) ?? ""
+        if isJSON, edit == nil, let pretty = formatJson(text: value) { return pretty }
+        return value
+    }
+
     private func load() {
-        text = (GridCellPaint.text(for: shown) ?? "")
+        text = displayText()
     }
 
     /// Typing over NULL or DEFAULT with nothing keeps them; any other change
     /// becomes a pending edit.
     private func save() {
-        guard editable, text != (GridCellPaint.text(for: shown) ?? "") else { return }
+        guard editable, text != displayText() else { return }
         model.setCell(.value(text: text), row: row, column: column)
+    }
+
+    private func loadFull() {
+        isLoadingFull = true
+        loadError = nil
+        Task {
+            do {
+                fullText = try await model.fullValue(row: row, column: column)
+                load()
+            } catch {
+                loadError = error.displayMessage
+            }
+            isLoadingFull = false
+        }
+    }
+
+    private func copy(_ value: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+    }
+}
+
+/// The edge between the grid and the row panel: drag to resize it.
+private struct PanelResizeHandle: View {
+    @Binding var width: Double
+    @State private var startWidth: Double?
+
+    var body: some View {
+        Rectangle()
+            .fill(Theme.hairline)
+            .frame(width: 1)
+            .overlay {
+                // A wider, invisible grip around the 1 pt line.
+                Color.clear
+                    .frame(width: 8)
+                    .contentShape(Rectangle())
+                    .onHover { inside in
+                        if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                    }
+                    .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                        .onChanged { drag in
+                            let start = startWidth ?? width
+                            startWidth = start
+                            // Dragging left makes the panel wider.
+                            width = min(max(start - drag.translation.width, 240), 720)
+                        }
+                        .onEnded { _ in startWidth = nil })
+            }
     }
 }
 

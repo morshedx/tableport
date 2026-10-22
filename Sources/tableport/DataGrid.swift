@@ -290,7 +290,18 @@ struct DataGrid: NSViewRepresentable {
         }
 
         /// The cell being typed in, and the field over it.
-        private(set) var editing: (row: Int, column: Int, field: NSTextField)?
+        private(set) var editing: (row: Int, column: Int, field: NSTextField)? {
+            didSet {
+                // The row draws the red outline, or not while its cell is edited.
+                for row in [oldValue?.row, editing?.row].compactMap({ $0 }) {
+                    table?.rowView(atRow: row, makeIfNecessary: false)?.needsDisplay = true
+                }
+            }
+        }
+
+        func isEditing(row: Int, column: Int) -> Bool {
+            editing.map { $0.row == row && $0.column == column } ?? false
+        }
 
         func numberOfRows(in tableView: NSTableView) -> Int { rows.count + newRows.count }
 
@@ -471,7 +482,9 @@ struct DataGrid: NSViewRepresentable {
             field.isBordered = false
             field.drawsBackground = true
             field.backgroundColor = .textBackgroundColor
-            field.focusRingType = .exterior
+            // macOS' own focus ring marks the cell being edited; the grid's
+            // red outline steps aside while it does.
+            field.focusRingType = .default
             field.cell?.usesSingleLineMode = true
             field.cell?.isScrollable = true
             field.delegate = self
@@ -831,7 +844,7 @@ final class GridRowView: NSTableRowView {
             (paint.text as NSString).draw(with: textRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: [
                 .font: font, .foregroundColor: color, .paragraphStyle: paint.isNumeric ? numberParagraph : paragraph,
             ])
-            if let cell = grid.selectedCell, cell.row == row, cell.column == column - 1 {
+            if let cell = grid.selectedCell, cell.row == row, cell.column == column - 1, !grid.isEditing(row: row, column: column - 1) {
                 // The outlined cell, as TablePlus marks it.
                 NSColor.systemRed.withAlphaComponent(0.85).setStroke()
                 let outline = NSBezierPath(rect: cell.column >= 0 ? NSRect(x: rect.minX, y: 0, width: rect.width, height: bounds.height).insetBy(dx: 1, dy: 1) : .zero)

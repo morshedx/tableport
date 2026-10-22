@@ -67,6 +67,12 @@ enum MainMenu {
         let file = NSMenu(title: "File")
         file.addItem(CommandItem("New Connection…", key: "n", action: actions.newConnection))
         file.addItem(CommandItem("New Query Tab", key: "t", isEnabled: { workspace() != nil }) { workspace()?.newQuery() })
+        file.addItem(CommandItem("New Table…", isEnabled: { workspace().map { !$0.connection.readOnly } ?? false }) {
+            workspace()?.showsNewTable = true
+        })
+        file.addItem(CommandItem("Open Anything…", key: "p", isEnabled: { workspace() != nil }) {
+            workspace().map { $0.showsQuickOpen.toggle() }
+        })
         file.addItem(.separator())
         file.addItem(CommandItem("Export…", key: "e", modifiers: [.command, .shift], isEnabled: { table() != nil }) {
             guard let table = table() else { return }

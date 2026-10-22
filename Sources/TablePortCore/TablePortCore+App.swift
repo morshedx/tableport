@@ -8,8 +8,10 @@ extension Error {
     /// DatabaseError is a debug dump, so the core's message is taken out.
     public var displayMessage: String {
         switch self as? DatabaseError {
-        case .Failed(let message, _, _, _):
-            return message
+        case .Failed(let message, let detail, let hint, _):
+            // Postgres' detail says which value or row was the problem
+            // ("Key (status)=(new) is duplicated."); the hint, what to do.
+            return [message, detail, hint.map { "Hint: \($0)" }].compactMap { $0 }.joined(separator: "\n")
         case .UnknownHostKey(let host, let fingerprint):
             return "The SSH host key of \(host) is not known yet (\(fingerprint))."
         case nil:
