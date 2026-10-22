@@ -34,6 +34,8 @@ pub fn parse_connection_url(url: &str) -> Result<ParsedUrl, DatabaseError> {
         (Engine::Redis, rest)
     } else if let Some(rest) = url.strip_prefix("rediss://") {
         (Engine::Redis, rest)
+    } else if url.starts_with("mongodb://") || url.starts_with("mongodb+srv://") {
+        return mongo_url(url);
     } else {
         return Err(DatabaseError::new("A connection URL starts with postgres://, mysql://, mariadb://, redis:// or rediss://."));
     };
@@ -90,6 +92,33 @@ pub fn parse_connection_url(url: &str) -> Result<ParsedUrl, DatabaseError> {
         });
     }
     Ok(parsed)
+}
+
+/// A MongoDB connection string stays whole, as the host: its options and
+/// several hosts mean something only to the driver. The password comes out,
+/// for the Keychain; the default database is read from the path.
+fn mongo_url(url: &str) -> Result<ParsedUrl, DatabaseError> {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("mongodb", url));
+    let (authority, tail) = match rest.find(['/', '?']) {
+        Some(index) => (&rest[..index], &rest[index..]),
+        None => (rest, ""),
+    };
+    let (credentials, hosts) = match authority.rsplit_once('@') {
+        Some((credentials, hosts)) => (Some(credentials), hosts),
+        None => (None, authority),
+    };
+    let (user, password) = match credentials.map(|credentials| credentials.split_once(':').unwrap_or((credentials, ""))) {
+        Some((user, password)) => (non_empty(decode(user)?), Some(decode(password)?).filter(|password| !password.is_empty())),
+        None => (None, None),
+    };
+    let path = tail.strip_prefix('/').unwrap_or("");
+    let database = non_empty(decode(path.split('?').next().unwrap_or(""))?);
+    let without_password = match &user {
+        Some(user) => format!("{scheme}://{}@{hosts}{tail}", user),
+        None => format!("{scheme}://{hosts}{tail}"),
+    };
+    let tls = if tail.contains("tls=true") || tail.contains("ssl=true") || scheme == "mongodb+srv" { Some(TlsMode::VerifyFull) } else { None };
+    Ok(ParsedUrl { host: Some(without_password), port: Some(0), database, user, password, tls, engine: Engine::Mongo })
 }
 
 /// `host`, `host:port`, `[::1]` or `[::1]:port`.

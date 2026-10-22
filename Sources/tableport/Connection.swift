@@ -49,7 +49,19 @@ struct SavedConnection: Codable, Identifiable, Hashable {
     var subtitle: String {
         if engine == .sqlite { return (database as NSString).abbreviatingWithTildeInPath }
         if engine == .libsql { return libsqlHost }
+        if engine == .mongo { return database.isEmpty ? displayHost : "\(displayHost) : \(database)" }
         return ssh.map { "\(host) : \(database) via \($0.host)" } ?? "\(host) : \(database)"
+    }
+
+    /// The host, or a MongoDB connection string's hosts:
+    /// mongodb+srv://app@cluster0.abc.mongodb.net/shop → cluster0.abc.mongodb.net.
+    var displayHost: String { Self.displayHost(of: host) }
+
+    static func displayHost(of host: String) -> String {
+        guard let range = host.range(of: "://") else { return host }
+        var rest = host[range.upperBound...]
+        if let at = rest.lastIndex(of: "@") { rest = rest[rest.index(after: at)...] }
+        return String(rest.prefix { $0 != "/" && $0 != "?" })
     }
 
     /// The host of a libSQL URL: libsql://name-org.turso.io → name-org.turso.io.
@@ -103,6 +115,7 @@ extension Engine: Codable {
         case .mysql: "mysql"
         case .libsql: "libsql"
         case .redis: "redis"
+        case .mongo: "mongo"
         }
     }
 
@@ -113,6 +126,7 @@ extension Engine: Codable {
         case "mysql": .mysql
         case "libsql": .libsql
         case "redis": .redis
+        case "mongo": .mongo
         default: .postgres
         }
     }
@@ -129,6 +143,7 @@ extension Engine: Codable {
         case .mysql: "MySQL"
         case .libsql: "libSQL"
         case .redis: "Redis"
+        case .mongo: "MongoDB"
         }
     }
 

@@ -66,7 +66,7 @@ fn supabase_pooler_url() {
 
 #[test]
 fn other_text_is_refused() {
-    let error = parse_connection_url("mongodb://root@localhost/db").unwrap_err();
+    let error = parse_connection_url("sqlserver://root@localhost/db").unwrap_err();
     assert!(error.message().contains("postgres://"), "{error}");
     let error = parse_connection_url("postgres://u@h:notaport/d").unwrap_err();
     assert!(error.message().contains("can't be read"), "{error}");
@@ -115,4 +115,16 @@ fn redis_urls() {
     assert_eq!((parsed.port, parsed.database, parsed.tls), (Some(6380), some("2"), Some(TlsMode::Require)));
     let parsed = parse_connection_url("redis://localhost").unwrap();
     assert_eq!((parsed.port, parsed.tls), (Some(6379), None));
+}
+
+#[test]
+fn mongodb_urls_stay_whole_without_the_password() {
+    let parsed = parse_connection_url("mongodb+srv://app:p%40ss@cluster0.abc.mongodb.net/shop?retryWrites=true&w=majority").unwrap();
+    assert_eq!(parsed.engine, Engine::Mongo);
+    assert_eq!(parsed.host.as_deref(), Some("mongodb+srv://app@cluster0.abc.mongodb.net/shop?retryWrites=true&w=majority"));
+    assert_eq!((parsed.user, parsed.password, parsed.database), (some("app"), some("p@ss"), some("shop")));
+    assert_eq!(parsed.tls, Some(TlsMode::VerifyFull), "Atlas is TLS");
+    let parsed = parse_connection_url("mongodb://localhost:27017,localhost:27018/?replicaSet=rs0").unwrap();
+    assert_eq!(parsed.host.as_deref(), Some("mongodb://localhost:27017,localhost:27018/?replicaSet=rs0"));
+    assert_eq!((parsed.user, parsed.database, parsed.tls), (None, None, None));
 }

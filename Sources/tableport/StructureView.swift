@@ -25,6 +25,9 @@ struct StructureView: View {
     @State private var failure: String?
 
     private var canEdit: Bool { model.canAddRows && model.relation.kind != .foreignTable }
+    /// A MongoDB collection's fields come from its documents, not a definition.
+    private var canEditColumns: Bool { canEdit && !isDocuments }
+    private var isDocuments: Bool { model.session.engine() == .mongo }
 
     var body: some View {
         Group {
@@ -40,8 +43,11 @@ struct StructureView: View {
                         }
                         columns(structure.columns)
                         indexes(structure.indexes)
-                        constraints("Foreign keys", structure.constraints.filter { $0.kind == .foreignKey }, showsKind: false)
-                        constraints("Constraints", structure.constraints.filter { $0.kind != .foreignKey }, showsKind: true)
+                        // A MongoDB collection has neither.
+                        if !isDocuments {
+                            constraints("Foreign keys", structure.constraints.filter { $0.kind == .foreignKey }, showsKind: false)
+                            constraints("Constraints", structure.constraints.filter { $0.kind != .foreignKey }, showsKind: true)
+                        }
                     }
                     .padding(16)
                 }
@@ -72,11 +78,13 @@ struct StructureView: View {
 
     private var toolbar: some View {
         HStack(spacing: 8) {
-            Button { sheet = .addColumn } label: { Label("Column", systemImage: "plus") }
+            // MongoDB has no fixed columns or foreign keys: only indexes.
+            let documents = model.session.engine() == .mongo
+            if !documents { Button { sheet = .addColumn } label: { Label("Column", systemImage: "plus") } }
             Button { sheet = .addIndex } label: { Label("Index", systemImage: "plus") }
-            Button { sheet = .addForeignKey } label: { Label("Foreign Key", systemImage: "plus") }
+            if !documents { Button { sheet = .addForeignKey } label: { Label("Foreign Key", systemImage: "plus") } }
             Spacer()
-            Text("Double-click a column to edit it. Right-click for more.")
+            Text(isDocuments ? "Fields and their types, from a sample of documents." : "Double-click a column to edit it. Right-click for more.")
                 .font(Theme.meta)
                 .foregroundStyle(Theme.inkSecondary)
         }
@@ -86,28 +94,30 @@ struct StructureView: View {
     // MARK: - Sections
 
     private func columns(_ columns: [ColumnDetail]) -> some View {
-        section("Columns", count: columns.count) {
+        section(isDocuments ? "Fields" : "Columns", count: columns.count) {
             Table(columns) {
                 TableColumn("name") { Text($0.name).font(AppFont.monoFont(size: 12)) }
                 TableColumn("type") { Text($0.columnType).font(AppFont.monoFont(size: 12)) }
                 TableColumn("nullable") { Text($0.nullable ? "YES" : "NO").font(AppFont.monoFont(size: 12)) }
                     .width(70)
+                    .defaultVisibility(isDocuments ? .hidden : .visible)
                 TableColumn("default") { cell($0.defaultValue) }
+                    .defaultVisibility(isDocuments ? .hidden : .visible)
                 TableColumn("comment") { cell($0.comment) }
                     // SQLite has no column comments.
-                    .defaultVisibility(model.session.engine().isSqlite ? .hidden : .visible)
+                    .defaultVisibility(model.session.engine().isSqlite || isDocuments ? .hidden : .visible)
             }
             .contextMenu(forSelectionType: ColumnDetail.ID.self) { names in
                 if let column = columns.first(where: { names.contains($0.name) }) {
-                    if canEdit { Button("Edit Column…") { sheet = .editColumn(column) } }
+                    if canEditColumns { Button("Edit Column…") { sheet = .editColumn(column) } }
                     Button("Copy Name") { copy(column.name) }
-                    if canEdit {
+                    if canEditColumns {
                         Divider()
                         Button("Drop Column…") { dropColumn(column.name) }
                     }
                 }
             } primaryAction: { names in
-                if canEdit, let column = columns.first(where: { names.contains($0.name) }) { sheet = .editColumn(column) }
+                if canEditColumns, let column = columns.first(where: { names.contains($0.name) }) { sheet = .editColumn(column) }
             }
             .scrollDisabled(true)
             .frame(height: Self.height(rows: columns.count))
@@ -474,7 +484,7 @@ private func commonColumnTypes(_ engine: Engine) -> [String] {
          "date", "datetime", "timestamp", "time", "json", "blob", "enum('a','b')", "char(36)"]
     case .sqlite, .libsql:
         ["INTEGER", "REAL", "TEXT", "BLOB", "NUMERIC"]
-    case .redis:
+    case .redis, .mongo:
         []
     }
 }
@@ -535,7 +545,7 @@ struct NewTableSheet: View {
                 Row(name: "id", columnType: "bigint", primaryKey: true, nullable: false, defaultValue: "AUTO_INCREMENT"),
                 Row(name: "", columnType: "varchar(255)", primaryKey: false, nullable: true),
             ])
-        case .postgres, .redis:
+        case .postgres, .redis, .mongo:
             break
         }
     }

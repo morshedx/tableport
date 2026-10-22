@@ -256,6 +256,9 @@ pub fn qualified_name(relation: Relation, engine: crate::Engine) -> String {
 /// `DROP TABLE|VIEW|MATERIALIZED VIEW|FOREIGN TABLE "schema"."name"`.
 #[uniffi::export]
 pub fn drop_relation_sql(relation: Relation, cascade: bool, engine: crate::Engine) -> String {
+    if engine == crate::Engine::Mongo {
+        return crate::mongo::shell_command(&relation, "drop()");
+    }
     // SQLite has no CASCADE: foreign keys decide what happens to other rows.
     let cascade = cascade && engine == crate::Engine::Postgres;
     let kind = match relation.kind {
@@ -272,10 +275,11 @@ pub fn drop_relation_sql(relation: Relation, cascade: bool, engine: crate::Engin
 pub fn truncate_sql(relation: Relation, restart_identity: bool, cascade: bool, engine: crate::Engine) -> String {
     // SQLite has no TRUNCATE; DELETE without WHERE empties the table quickly.
     match engine {
+        crate::Engine::Mongo => return crate::mongo::shell_command(&relation, "deleteMany({})"),
         crate::Engine::Sqlite | crate::Engine::Libsql => return format!("DELETE FROM {};", relation.quoted_name()),
         // TRUNCATE restarts AUTO_INCREMENT on its own, and has no CASCADE.
         crate::Engine::Mysql => return format!("TRUNCATE TABLE {};", relation.quoted_name()),
-        crate::Engine::Postgres | crate::Engine::Redis | crate::Engine::Mongo => {}
+        crate::Engine::Postgres | crate::Engine::Redis => {}
     }
     format!(
         "TRUNCATE {}{}{};",

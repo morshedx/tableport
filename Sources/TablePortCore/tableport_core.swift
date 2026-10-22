@@ -5272,6 +5272,11 @@ public enum Engine: Equatable, Hashable {
      * `database` the logical database to start in ("0").
      */
     case redis
+    /**
+     * MongoDB. `host` is a host name, or a whole connection string
+     * (mongodb://, mongodb+srv:// for Atlas) without its password.
+     */
+    case mongo
 
 
 
@@ -5303,6 +5308,8 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         
         case 5: return .redis
         
+        case 6: return .mongo
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -5329,6 +5336,10 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         
         case .redis:
             writeInt(&buf, Int32(5))
+        
+        
+        case .mongo:
+            writeInt(&buf, Int32(6))
         
         }
     }

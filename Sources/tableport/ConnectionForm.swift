@@ -95,6 +95,11 @@ struct ConnectionForm: View {
         }
     }
 
+    /// A MongoDB connection string names its own hosts and ports.
+    private var isConnectionString: Bool { engine == .mongo && host.contains("://") }
+
+    private var serverPort: Int? { isConnectionString ? 0 : number(port) }
+
     private func number(_ text: String) -> Int? {
         Int(text).flatMap { (1...65535).contains($0) ? $0 : nil }
     }
@@ -102,10 +107,10 @@ struct ConnectionForm: View {
     private var isServerComplete: Bool {
         if engine.isSqlite { return !trimmed(database).isEmpty }
         // MySQL shows every database of the server; naming one is optional.
-        let hasDatabase = engine == .mysql || engine == .redis || !trimmed(database).isEmpty
-        // Redis logs in as its default user when none is given.
-        let hasUser = engine == .redis || !trimmed(user).isEmpty
-        return !trimmed(host).isEmpty && hasDatabase && hasUser && number(port) != nil
+        let hasDatabase = engine == .mysql || engine == .redis || engine == .mongo || !trimmed(database).isEmpty
+        // Redis logs in as its default user, and MongoDB may need no login.
+        let hasUser = engine == .redis || engine == .mongo || !trimmed(user).isEmpty
+        return !trimmed(host).isEmpty && hasDatabase && hasUser && serverPort != nil
     }
 
     private var isSSHComplete: Bool {
@@ -216,7 +221,7 @@ struct ConnectionForm: View {
         switch engine {
         case .sqlite: sqliteTab
         case .libsql: libsqlTab
-        case .postgres, .mysql, .redis: serverTab
+        case .postgres, .mysql, .redis, .mongo: serverTab
         }
     }
 
@@ -307,18 +312,20 @@ struct ConnectionForm: View {
                         TextField("Host", text: $host, prompt: Text("localhost"))
                             // A URL pasted into Host fills the whole form instead.
                             .onChange(of: host) { _, text in
-                                if ["postgres://", "postgresql://", "mysql://", "mariadb://", "redis://", "rediss://"].contains(where: text.hasPrefix) { url = text }
+                                if ["postgres://", "postgresql://", "mysql://", "mariadb://", "redis://", "rediss://", "mongodb://", "mongodb+srv://"].contains(where: text.hasPrefix) { url = text }
                             }
-                        Text("Port").foregroundStyle(Theme.inkSecondary)
-                        TextField("Port", text: $port, prompt: Text(Self.defaults(engine).port))
-                            .frame(width: 52)
+                        if !isConnectionString {
+                            Text("Port").foregroundStyle(Theme.inkSecondary)
+                            TextField("Port", text: $port, prompt: Text(Self.defaults(engine).port))
+                                .frame(width: 52)
+                        }
                     }
                 }
                 FormRow("Database") {
                     TextField("Database", text: $database, prompt: Text(databasePrompt))
                 }
                 FormRow("User") {
-                    TextField("User", text: $user, prompt: Text(engine == .redis ? "default" : engine == .mysql ? "root" : "postgres"))
+                    TextField("User", text: $user, prompt: Text(engine == .redis ? "default" : engine == .mongo ? "none" : engine == .mysql ? "root" : "postgres"))
                 }
                 FormRow("Password") {
                     HStack(spacing: 6) {
@@ -355,7 +362,7 @@ struct ConnectionForm: View {
             FormCard("AI tools") {
                 SwitchRow("Allow AI access", hint: "Claude, Cursor and other AI tools can read it, never change it.",
                           isOn: $aiAccess)
-                if aiAccess && engine == .postgres {
+                if aiAccess && (engine == .postgres || engine == .mongo) {
                     SwitchRow("Every database on this server",
                               hint: "With the same login, still read-only. For many databases on one server.",
                               isOn: $aiAllDatabases, indent: true)
@@ -419,7 +426,7 @@ struct ConnectionForm: View {
             }
             if isNew {
                 Picker("Database", selection: $engine) {
-                    ForEach([Engine.postgres, .mysql, .sqlite, .libsql, .redis], id: \.self) { engine in
+                    ForEach([Engine.postgres, .mysql, .sqlite, .libsql, .redis, .mongo], id: \.self) { engine in
                         Text(engine == .mysql ? "MySQL / MariaDB" : engine == .libsql ? "libSQL / Turso" : engine.label).tag(engine)
                     }
                 }
@@ -435,6 +442,7 @@ struct ConnectionForm: View {
         switch engine {
         case .mysql: "optional: every database is shown"
         case .redis: "0"
+        case .mongo: "optional: every database is shown"
         default: "postgres"
         }
     }
@@ -445,6 +453,7 @@ struct ConnectionForm: View {
         case .postgres: ("5432", "postgres", "postgres")
         case .mysql: ("3306", "root", "")
         case .redis: ("6379", "", "0")
+        case .mongo: ("27017", "", "")
         case .sqlite, .libsql: ("", "", "")
         }
     }
@@ -489,6 +498,11 @@ struct ConnectionForm: View {
             let user = trimmed(self.user).isEmpty ? "" : "\(trimmed(self.user))@"
             return "Redis · \(user)\(host):\(port)/\(trimmed(database).isEmpty ? "0" : trimmed(database))"
         }
+        if engine == .mongo {
+            // A connection string shows its hosts only.
+            let shown = host.contains("://") ? SavedConnection.displayHost(of: host) : "\(host):\(port)"
+            return "MongoDB · \(shown)\(trimmed(database).isEmpty ? "" : "/\(trimmed(database))")"
+        }
         let database = trimmed(self.database).isEmpty ? "database" : trimmed(self.database)
         return "PostgreSQL · \(trimmed(user))@\(host):\(port)/\(database)"
     }
@@ -497,7 +511,7 @@ struct ConnectionForm: View {
         HStack(spacing: 8) {
             Image(systemName: "link")
                 .foregroundStyle(Theme.inkSecondary)
-            TextField("URL", text: $url, prompt: Text("Paste a \(engine == .mysql ? "mysql" : engine == .redis ? "redis" : "postgres"):// URL to fill the form"))
+            TextField("URL", text: $url, prompt: Text("Paste a \(engine == .mysql ? "mysql" : engine == .redis ? "redis" : engine == .mongo ? "mongodb" : "postgres"):// URL to fill the form"))
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: url) { _, text in fill(from: text) }
         }
@@ -640,7 +654,7 @@ struct ConnectionForm: View {
             // Short, to fit beside Test: "Connected · 17.7" or "Opened · SQLite 3.50"; the full version on hover.
             Label(engine == .sqlite ? "Opened · \(version)"
                   // "MySQL 8.4.13" → "8.4.13"; the server's name is in the header.
-                  : engine == .mysql || engine == .libsql || engine == .redis ? "Connected · \(version.split(separator: " ").last.map(String.init) ?? version)"
+                  : engine == .mysql || engine == .libsql || engine == .redis || engine == .mongo ? "Connected · \(version.split(separator: " ").last.map(String.init) ?? version)"
                   : "Connected · \(version.split(separator: " ").first.map(String.init) ?? version)",
                   systemImage: "checkmark.circle.fill")
                 .help("PostgreSQL \(version)")
@@ -720,7 +734,7 @@ struct ConnectionForm: View {
             return ConnectionSettings(host: "", port: 0, database: (trimmed(database) as NSString).expandingTildeInPath, user: "",
                                       password: nil, tls: .disable, ssh: nil, readOnly: readOnly, engine: .sqlite)
         }
-        guard let port = number(port) else { return nil }
+        guard let port = serverPort else { return nil }
         var ssh: SshSettings?
         if useSSH, let sshPort = number(sshPort) {
             let byKey = sshAuth == .key
@@ -768,7 +782,7 @@ struct ConnectionForm: View {
     private func save() {
         if engine == .sqlite { return saveFile() }
         if engine == .libsql { return saveRemote() }
-        guard let port = number(port) else { return }
+        guard let port = serverPort else { return }
         var connection = SavedConnection(
             name: trimmed(name), host: trimmed(host), port: port,
             database: trimmed(database), user: trimmed(user), tag: tag, tls: tls

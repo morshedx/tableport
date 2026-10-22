@@ -225,6 +225,9 @@ impl DatabaseSession {
         if let Some(link) = self.mysql() {
             return on_runtime(async move { link.execute(sql).await }).await;
         }
+        if settings_engine(self) == Engine::Mongo {
+            return self.mongo_run(sql, 0).await.map(|_| ());
+        }
         let client = self.client()?;
         let endpoint = self.settings.endpoint();
         on_runtime(async move {
@@ -316,6 +319,10 @@ impl DatabaseSession {
         // rather than fail every later call.
         self.link.read().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+fn settings_engine(session: &DatabaseSession) -> Engine {
+    session.settings.engine
 }
 
 fn poisoned() -> DatabaseError {

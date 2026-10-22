@@ -71,7 +71,7 @@ enum MainMenu {
         file.addItem(CommandItem("New Connection…", key: "n", action: actions.newConnection))
         file.addItem(CommandItem("Open SQLite File…", key: "o", action: actions.openSqliteFile))
         file.addItem(CommandItem("New Query Tab", key: "t", isEnabled: { sqlWorkspace() != nil }) { sqlWorkspace()?.newQuery() })
-        file.addItem(CommandItem("New Table…", isEnabled: { sqlWorkspace().map { !$0.connection.readOnly } ?? false }) {
+        file.addItem(CommandItem("New Table…", isEnabled: { sqlWorkspace().map { !$0.connection.readOnly && $0.connection.engine != .mongo } ?? false }) {
             workspace()?.showsNewTable = true
         })
         file.addItem(CommandItem("Open Anything…", key: "p", isEnabled: { sqlWorkspace() != nil }) {

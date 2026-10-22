@@ -64,6 +64,9 @@ pub struct PendingChanges {
 /// each as its column's type. `columns` gives the column order.
 #[uniffi::export]
 pub fn insert_sql(row: &NewRow, relation: &Relation, columns: &[Column], engine: Engine) -> Result<String, DatabaseError> {
+    if engine == Engine::Mongo {
+        return crate::mongo::insert_command(row, relation, columns);
+    }
     // SQLite has no DEFAULT in VALUES: a column left out gets its default.
     let set: Vec<&Column> = columns
         .iter()
@@ -98,6 +101,9 @@ pub fn changes_sql(
     primary_key: &[String],
     engine: Engine,
 ) -> Result<Vec<String>, DatabaseError> {
+    if engine == Engine::Mongo {
+        return crate::mongo::change_commands(changes, relation, columns);
+    }
     let mut statements = Vec::new();
     for update in &changes.updates {
         let set: Vec<&Column> = columns.iter().filter(|column| update.values.contains_key(&column.name)).collect();

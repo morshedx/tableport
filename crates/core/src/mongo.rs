@@ -886,6 +886,71 @@ pub(crate) fn structure_change_commands(relation: &Relation, change: &crate::str
     }
 }
 
+// MARK: - Commands for review
+
+/// `use database` and a call on the collection, as the editor runs them.
+pub(crate) fn shell_command(relation: &Relation, call: &str) -> String {
+    let quote = |text: &str| serde_json::Value::String(text.to_string()).to_string();
+    format!("use {}\ndb.getCollection({}).{call}", quote(&relation.schema), quote(&relation.name))
+}
+
+fn typed_json(name: &str, draft: Option<&CellDraft>, columns: &[Column]) -> Result<String, DatabaseError> {
+    let column_type = columns.iter().find(|column| column.name == name).map_or("", |column| column.column_type.as_str());
+    Ok(draft_value(draft, column_type)?.into_relaxed_extjson().to_string())
+}
+
+/// The commands a commit runs, for Review Changes.
+pub(crate) fn change_commands(changes: &PendingChanges, relation: &Relation, columns: &[Column]) -> Result<Vec<String>, DatabaseError> {
+    let quote = |text: &str| serde_json::Value::String(text.to_string()).to_string();
+    let collection = format!("db.getCollection({})", quote(&relation.name));
+    let id = |key: &[String]| -> Result<String, DatabaseError> {
+        let text = key.first().ok_or_else(|| DatabaseError::new("The document has no _id."))?;
+        typed_json("_id", Some(&CellDraft::Value { text: text.clone() }), columns)
+    };
+    let mut commands = Vec::new();
+    for update in &changes.updates {
+        let mut set = Vec::new();
+        let mut unset = Vec::new();
+        let mut names: Vec<&String> = update.values.keys().collect();
+        names.sort();
+        for name in names {
+            match &update.values[name] {
+                CellDraft::Null => unset.push(format!("{}: \"\"", quote(name))),
+                draft => set.push(format!("{}: {}", quote(name), typed_json(name, Some(draft), columns)?)),
+            }
+        }
+        let mut parts = Vec::new();
+        if !set.is_empty() {
+            parts.push(format!("$set: {{ {} }}", set.join(", ")));
+        }
+        if !unset.is_empty() {
+            parts.push(format!("$unset: {{ {} }}", unset.join(", ")));
+        }
+        commands.push(format!("{collection}.updateOne({{ _id: {} }}, {{ {} }})", id(&update.key)?, parts.join(", ")));
+    }
+    for key in &changes.deletes {
+        commands.push(format!("{collection}.deleteOne({{ _id: {} }})", id(key)?));
+    }
+    for row in &changes.inserts {
+        commands.push(insert_command(row, relation, columns)?);
+    }
+    Ok(commands)
+}
+
+pub(crate) fn insert_command(row: &crate::changes::NewRow, relation: &Relation, columns: &[Column]) -> Result<String, DatabaseError> {
+    let quote = |text: &str| serde_json::Value::String(text.to_string()).to_string();
+    let mut fields = Vec::new();
+    let mut names: Vec<&String> = row.values.keys().collect();
+    names.sort();
+    for name in names {
+        let draft = &row.values[name];
+        if !matches!(draft, CellDraft::Default) {
+            fields.push(format!("{}: {}", quote(name), typed_json(name, Some(draft), columns)?));
+        }
+    }
+    Ok(format!("db.getCollection({}).insertOne({{ {} }})", quote(&relation.name), fields.join(", ")))
+}
+
 // MARK: - Query editor
 
 /// One call in mongo shell syntax: `db.people.find({ age: { $gt: 30 } }).sort({ age: -1 }).limit(5)`.
@@ -958,7 +1023,13 @@ fn parse_call(parser: &mut ShellParser) -> Result<ShellCall, DatabaseError> {
         return Ok(ShellCall { collection: None, method: method.into(), arguments: Vec::new(), modifiers: Vec::new() });
     }
     if first == "use" {
-        let name = parser.word();
+        // use shop, or use "my-shop" for names a word can't hold.
+        parser.space();
+        let name = if matches!(parser.peek(), Some('"' | '\'')) {
+            parser.value()?.as_str().unwrap_or_default().to_string()
+        } else {
+            parser.word()
+        };
         return Ok(ShellCall { collection: None, method: "use".into(), arguments: vec![Bson::String(name)], modifiers: Vec::new() });
     }
     // The parser reads dots into words: "db.people.find" is one word.
