@@ -11,6 +11,7 @@ mod error;
 mod export;
 mod mcp;
 mod libsql;
+mod mongo;
 mod mysql;
 mod query;
 mod redis;

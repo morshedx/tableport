@@ -368,6 +368,7 @@ fn engine_name(engine: crate::Engine) -> &'static str {
         crate::Engine::Sqlite => "SQLite",
         crate::Engine::Libsql => "libSQL",
         crate::Engine::Redis => "Redis",
+        crate::Engine::Mongo => "MongoDB",
     }
 }
 

@@ -56,6 +56,7 @@ impl DatabaseSession {
             Engine::Sqlite | Engine::Libsql => return self.sqlite_structure(&relation).await,
             Engine::Mysql => return self.mysql_structure(&relation).await,
             Engine::Redis => return Err(DatabaseError::new("Redis keys have no table structure.")),
+            Engine::Mongo => return self.mongo_structure(relation).await,
             Engine::Postgres => {}
         }
         let regclass = relation.regclass()?;
@@ -186,6 +187,7 @@ pub fn structure_change_sql(relation: Relation, change: StructureChange, engine:
         Engine::Sqlite | Engine::Libsql => return sqlite_structure_change_sql(&relation, change),
         Engine::Mysql => return crate::mysql::structure_change_sql(&relation, &change, None),
         Engine::Redis => return Err(DatabaseError::new("Redis keys have no table structure.")),
+        Engine::Mongo => return crate::mongo::structure_change_commands(&relation, &change),
         Engine::Postgres => {}
     }
     let table = format!("ALTER TABLE {}", relation.quoted_name());
@@ -312,6 +314,9 @@ impl DatabaseSession {
     /// rolls back on its own when a statement fails; an explicit BEGIN would
     /// leave the session in a failed transaction instead.
     pub async fn apply_structure_change(&self, relation: Relation, change: StructureChange) -> Result<(), DatabaseError> {
+        if self.engine() == Engine::Mongo {
+            return self.mongo_apply_structure(relation, change).await;
+        }
         if let Some(link) = self.mysql() {
             // MySQL commits each DDL statement on its own; most changes are one statement.
             let statements = self.structure_change_statements(relation, change).await?;

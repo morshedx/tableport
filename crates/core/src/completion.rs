@@ -78,7 +78,7 @@ impl DatabaseSession {
         match self.engine() {
             crate::Engine::Sqlite | crate::Engine::Libsql => return self.sqlite_completer().await,
             crate::Engine::Mysql => return self.mysql_completer().await,
-            crate::Engine::Redis => return Err(DatabaseError::new("Redis has no SQL to complete.")),
+            crate::Engine::Redis | crate::Engine::Mongo => return Err(DatabaseError::new("This connection has no SQL to complete.")),
             crate::Engine::Postgres => {}
         }
         let relation_rows = self

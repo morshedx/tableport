@@ -106,6 +106,9 @@ pub struct RowPage {
 #[uniffi::export]
 impl DatabaseSession {
     pub async fn columns(&self, relation: Relation) -> Result<Vec<Column>, DatabaseError> {
+        if self.engine() == crate::Engine::Mongo {
+            return self.mongo_columns(relation).await;
+        }
         match self.dialect() {
             Dialect::Sqlite => return self.sqlite_columns(&relation).await,
             Dialect::Mysql => return self.mysql_columns(&relation).await,
@@ -159,6 +162,9 @@ impl DatabaseSession {
         offset: u64,
         limit: u64,
     ) -> Result<RowPage, DatabaseError> {
+        if self.engine() == crate::Engine::Mongo {
+            return self.mongo_rows(relation, columns, filters, sort, offset, limit).await;
+        }
         let dialect = self.dialect();
         let select_list = if columns.is_empty() {
             "NULL".to_string()
@@ -184,6 +190,9 @@ impl DatabaseSession {
     /// instant on any size. None for views and tables never analyzed. A
     /// partitioned table adds up its partitions.
     pub async fn estimated_row_count(&self, relation: Relation) -> Result<Option<u64>, DatabaseError> {
+        if self.engine() == crate::Engine::Mongo {
+            return self.mongo_estimated_count(relation).await;
+        }
         // SQLite keeps no row estimate; a file database counts quickly.
         match self.dialect() {
             Dialect::Sqlite => return self.row_count(relation, Vec::new(), Vec::new()).await.map(Some),
@@ -215,6 +224,9 @@ impl DatabaseSession {
         columns: Vec<Column>,
         filters: Vec<RowFilter>,
     ) -> Result<u64, DatabaseError> {
+        if self.engine() == crate::Engine::Mongo {
+            return self.mongo_count(relation, columns, filters).await;
+        }
         let mut sql = format!("SELECT count(*) FROM {}", relation.quoted_name());
         sql += &where_clause(&filters, &columns, self.dialect())?;
         let rows = self.text_rows(sql).await?;

@@ -148,6 +148,9 @@ impl DatabaseSession {
         if primary_key.is_empty() {
             return Err(DatabaseError::new("The table has no primary key, so its rows can't be read again."));
         }
+        if self.engine() == crate::Engine::Mongo {
+            return self.mongo_full_rows(relation, columns, keys).await;
+        }
         let dialect = self.dialect();
         let key_list = primary_key.iter().map(|name| dialect.text(&quote_identifier(name))).collect::<Vec<_>>().join(", ");
         let value_list =

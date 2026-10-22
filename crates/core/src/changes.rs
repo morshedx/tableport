@@ -27,7 +27,7 @@ pub enum SqlFunction {
 impl SqlFunction {
     fn sql(self, engine: Engine) -> &'static str {
         match (self, engine) {
-            (Self::Now, Engine::Postgres | Engine::Mysql | Engine::Redis) => "now()",
+            (Self::Now, Engine::Postgres | Engine::Mysql | Engine::Redis | Engine::Mongo) => "now()",
             (Self::Now, Engine::Sqlite | Engine::Libsql) => "CURRENT_TIMESTAMP",
             (Self::CurrentDate, _) => "CURRENT_DATE",
             (Self::CurrentTime, _) => "CURRENT_TIME",
@@ -153,6 +153,9 @@ impl DatabaseSession {
             return Err(DatabaseError::new("Rows of a table without a primary key can't be changed."));
         }
         let engine = self.engine();
+        if engine == Engine::Mongo {
+            return self.mongo_commit(relation, changes, columns).await;
+        }
         let statements = changes_sql(&changes, &relation, &columns, &primary_key, engine)?;
         if statements.is_empty() {
             return Ok(());

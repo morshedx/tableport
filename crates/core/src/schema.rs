@@ -64,6 +64,9 @@ pub struct ForeignKey {
 impl DatabaseSession {
     /// The databases the user can connect to, sorted by name.
     pub async fn databases(&self) -> Result<Vec<String>, DatabaseError> {
+        if self.engine() == crate::Engine::Mongo {
+            return Ok(self.mongo_schemas().await?.into_iter().map(|schema| schema.name).collect());
+        }
         // A SQLite connection is one file.
         match self.dialect() {
             Dialect::Sqlite => return Ok(vec![self.settings().database]),
@@ -81,6 +84,9 @@ impl DatabaseSession {
     /// The user's schemas with their tables, views and materialized views.
     /// System schemas are left out; schemas without relations are kept.
     pub async fn schemas(&self) -> Result<Vec<SchemaContents>, DatabaseError> {
+        if self.engine() == crate::Engine::Mongo {
+            return self.mongo_schemas().await;
+        }
         match self.dialect() {
             Dialect::Sqlite => return self.sqlite_schemas().await,
             Dialect::Mysql => return self.mysql_schemas().await,
@@ -124,6 +130,10 @@ impl DatabaseSession {
 
     /// The primary key columns, in key order; empty without a primary key.
     pub async fn primary_key(&self, relation: Relation) -> Result<Vec<String>, DatabaseError> {
+        // Every document has its _id; a view's documents can't be edited.
+        if self.engine() == crate::Engine::Mongo {
+            return Ok(if relation.kind == RelationKind::View { Vec::new() } else { vec!["_id".into()] });
+        }
         match self.dialect() {
             Dialect::Sqlite => return self.sqlite_primary_key(&relation).await,
             Dialect::Mysql => return self.mysql_primary_key(&relation).await,
@@ -143,6 +153,9 @@ impl DatabaseSession {
     }
 
     pub async fn foreign_keys(&self, relation: Relation) -> Result<Vec<ForeignKey>, DatabaseError> {
+        if self.engine() == crate::Engine::Mongo {
+            return Ok(Vec::new());
+        }
         match self.dialect() {
             Dialect::Sqlite => return self.sqlite_foreign_keys(&relation).await,
             Dialect::Mysql => return self.mysql_foreign_keys(&relation).await,
@@ -262,7 +275,7 @@ pub fn truncate_sql(relation: Relation, restart_identity: bool, cascade: bool, e
         crate::Engine::Sqlite | crate::Engine::Libsql => return format!("DELETE FROM {};", relation.quoted_name()),
         // TRUNCATE restarts AUTO_INCREMENT on its own, and has no CASCADE.
         crate::Engine::Mysql => return format!("TRUNCATE TABLE {};", relation.quoted_name()),
-        crate::Engine::Postgres | crate::Engine::Redis => {}
+        crate::Engine::Postgres | crate::Engine::Redis | crate::Engine::Mongo => {}
     }
     format!(
         "TRUNCATE {}{}{};",
