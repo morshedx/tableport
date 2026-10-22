@@ -28,6 +28,9 @@ pub enum Engine {
     /// A database file on this Mac: `database` is its path; the server
     /// fields, TLS and SSH are not used.
     Sqlite,
+    /// MySQL or MariaDB. `database` is optional: the sidebar shows every
+    /// database of the server.
+    Mysql,
 }
 
 /// Everything needed to open one connection.
@@ -52,7 +55,7 @@ impl ConnectionSettings {
     /// Where the connection goes, for messages: "host:port", or the file name.
     pub(crate) fn endpoint(&self) -> String {
         match self.engine {
-            Engine::Postgres => format!("{}:{}", self.host, self.port),
+            Engine::Postgres | Engine::Mysql => format!("{}:{}", self.host, self.port),
             Engine::Sqlite => std::path::Path::new(&self.database)
                 .file_name()
                 .map_or_else(|| self.database.clone(), |name| name.to_string_lossy().into_owned()),
@@ -72,6 +75,7 @@ pub struct DatabaseSession {
 enum Link {
     Postgres(PgLink),
     Sqlite(crate::sqlite::SqliteLink),
+    Mysql(crate::mysql::MysqlLink),
 }
 
 struct PgLink {
@@ -104,6 +108,7 @@ impl DatabaseSession {
         match &*self.read_link() {
             Link::Postgres(link) => link.server_version.clone(),
             Link::Sqlite(link) => link.version.clone(),
+            Link::Mysql(link) => link.version.clone(),
         }
     }
 
@@ -128,6 +133,9 @@ impl DatabaseSession {
         if self.settings.engine == Engine::Sqlite {
             return self.execute("SELECT 1".into()).await;
         }
+        if let Some(link) = self.mysql() {
+            return on_runtime(async move { link.ping().await }).await;
+        }
         let client = self.client()?;
         let endpoint = self.settings.endpoint();
         on_runtime(async move {
@@ -149,6 +157,7 @@ impl DatabaseSession {
         match &*self.read_link() {
             Link::Postgres(link) => link.client.is_closed(),
             Link::Sqlite(link) => link.is_closed(),
+            Link::Mysql(link) => link.is_closed(),
         }
     }
 
@@ -156,6 +165,7 @@ impl DatabaseSession {
         match &*self.read_link() {
             Link::Postgres(link) => link.connection_task.abort(),
             Link::Sqlite(link) => link.close(),
+            Link::Mysql(link) => link.close(),
         }
     }
 
@@ -163,6 +173,9 @@ impl DatabaseSession {
     /// run as one implicit transaction.
     pub async fn execute(&self, sql: String) -> Result<(), DatabaseError> {
         if let Some(link) = self.sqlite() {
+            return on_runtime(async move { link.execute(sql).await }).await;
+        }
+        if let Some(link) = self.mysql() {
             return on_runtime(async move { link.execute(sql).await }).await;
         }
         let client = self.client()?;
@@ -195,7 +208,7 @@ impl DatabaseSession {
     pub(crate) fn client(&self) -> Result<Arc<Client>, DatabaseError> {
         match &*self.read_link() {
             Link::Postgres(link) => Ok(link.client.clone()),
-            Link::Sqlite(_) => Err(DatabaseError::new("This needs a PostgreSQL connection.")),
+            Link::Sqlite(_) | Link::Mysql(_) => Err(DatabaseError::new("This needs a PostgreSQL connection.")),
         }
     }
 
@@ -203,7 +216,15 @@ impl DatabaseSession {
     pub(crate) fn sqlite(&self) -> Option<crate::sqlite::SqliteLink> {
         match &*self.read_link() {
             Link::Sqlite(link) => Some(link.clone()),
-            Link::Postgres(_) => None,
+            Link::Postgres(_) | Link::Mysql(_) => None,
+        }
+    }
+
+    /// The MySQL link, when the connection is to MySQL or MariaDB.
+    pub(crate) fn mysql(&self) -> Option<crate::mysql::MysqlLink> {
+        match &*self.read_link() {
+            Link::Mysql(link) => Some(link.clone()),
+            Link::Postgres(_) | Link::Sqlite(_) => None,
         }
     }
 
@@ -211,13 +232,14 @@ impl DatabaseSession {
         match self.settings.engine {
             Engine::Postgres => crate::rows::Dialect::Postgres,
             Engine::Sqlite => crate::rows::Dialect::Sqlite,
+            Engine::Mysql => crate::rows::Dialect::Mysql,
         }
     }
 
     pub(crate) fn tls(&self) -> Option<postgres_native_tls::MakeTlsConnector> {
         match &*self.read_link() {
             Link::Postgres(link) => link.tls.clone(),
-            Link::Sqlite(_) => None,
+            Link::Sqlite(_) | Link::Mysql(_) => None,
         }
     }
 
@@ -236,6 +258,7 @@ async fn open_link(settings: &ConnectionSettings) -> Result<Link, DatabaseError>
     match settings.engine {
         Engine::Postgres => open_pg_link(settings).await.map(Link::Postgres),
         Engine::Sqlite => crate::sqlite::SqliteLink::open(settings).await.map(Link::Sqlite),
+        Engine::Mysql => crate::mysql::MysqlLink::open(settings).await.map(Link::Mysql),
     }
 }
 
@@ -315,6 +338,9 @@ impl DatabaseSession {
     /// arrives as text (None for NULL), whatever its type.
     pub(crate) async fn text_rows(&self, sql: String) -> Result<Vec<Vec<Option<String>>>, DatabaseError> {
         if let Some(link) = self.sqlite() {
+            return on_runtime(async move { link.text_rows(sql).await }).await;
+        }
+        if let Some(link) = self.mysql() {
             return on_runtime(async move { link.text_rows(sql).await }).await;
         }
         let client = self.client()?;

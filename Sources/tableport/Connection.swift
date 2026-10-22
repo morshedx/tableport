@@ -88,12 +88,17 @@ extension Engine: Codable {
         switch self {
         case .postgres: "postgres"
         case .sqlite: "sqlite"
+        case .mysql: "mysql"
         }
     }
 
     public init(from decoder: Decoder) throws {
         let name = try decoder.singleValueContainer().decode(String.self)
-        self = name == "sqlite" ? .sqlite : .postgres
+        self = switch name {
+        case "sqlite": .sqlite
+        case "mysql": .mysql
+        default: .postgres
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -105,6 +110,7 @@ extension Engine: Codable {
         switch self {
         case .postgres: "PostgreSQL"
         case .sqlite: "SQLite"
+        case .mysql: "MySQL"
         }
     }
 }

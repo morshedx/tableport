@@ -4763,6 +4763,11 @@ public enum Engine: Equatable, Hashable {
      * fields, TLS and SSH are not used.
      */
     case sqlite
+    /**
+     * MySQL or MariaDB. `database` is optional: the sidebar shows every
+     * database of the server.
+     */
+    case mysql
 
 
 
@@ -4788,6 +4793,8 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         
         case 2: return .sqlite
         
+        case 3: return .mysql
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -4802,6 +4809,10 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         
         case .sqlite:
             writeInt(&buf, Int32(2))
+        
+        
+        case .mysql:
+            writeInt(&buf, Int32(3))
         
         }
     }

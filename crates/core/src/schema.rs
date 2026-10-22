@@ -79,8 +79,10 @@ impl DatabaseSession {
     /// The user's schemas with their tables, views and materialized views.
     /// System schemas are left out; schemas without relations are kept.
     pub async fn schemas(&self) -> Result<Vec<SchemaContents>, DatabaseError> {
-        if self.dialect() == Dialect::Sqlite {
-            return self.sqlite_schemas().await;
+        match self.dialect() {
+            Dialect::Sqlite => return self.sqlite_schemas().await,
+            Dialect::Mysql => return self.mysql_schemas().await,
+            Dialect::Postgres => {}
         }
         let schema_rows = self
             .text_rows(
@@ -120,8 +122,10 @@ impl DatabaseSession {
 
     /// The primary key columns, in key order; empty without a primary key.
     pub async fn primary_key(&self, relation: Relation) -> Result<Vec<String>, DatabaseError> {
-        if self.dialect() == Dialect::Sqlite {
-            return self.sqlite_primary_key(&relation).await;
+        match self.dialect() {
+            Dialect::Sqlite => return self.sqlite_primary_key(&relation).await,
+            Dialect::Mysql => return self.mysql_primary_key(&relation).await,
+            Dialect::Postgres => {}
         }
         let rows = self
             .text_rows(format!(
@@ -137,8 +141,10 @@ impl DatabaseSession {
     }
 
     pub async fn foreign_keys(&self, relation: Relation) -> Result<Vec<ForeignKey>, DatabaseError> {
-        if self.dialect() == Dialect::Sqlite {
-            return self.sqlite_foreign_keys(&relation).await;
+        match self.dialect() {
+            Dialect::Sqlite => return self.sqlite_foreign_keys(&relation).await,
+            Dialect::Mysql => return self.mysql_foreign_keys(&relation).await,
+            Dialect::Postgres => {}
         }
         let rows = self
             .text_rows(format!(
@@ -186,7 +192,8 @@ impl DatabaseSession {
     /// functions and those that extensions installed are left out.
     pub async fn routines(&self, schema: String) -> Result<Vec<Routine>, DatabaseError> {
         // SQLite has no stored functions.
-        if self.dialect() == Dialect::Sqlite {
+        // Stored routines on MySQL come later.
+        if self.dialect() != Dialect::Postgres {
             return Ok(Vec::new());
         }
         let rows = self

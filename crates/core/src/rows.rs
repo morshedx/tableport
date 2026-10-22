@@ -106,8 +106,10 @@ pub struct RowPage {
 #[uniffi::export]
 impl DatabaseSession {
     pub async fn columns(&self, relation: Relation) -> Result<Vec<Column>, DatabaseError> {
-        if self.dialect() == Dialect::Sqlite {
-            return self.sqlite_columns(&relation).await;
+        match self.dialect() {
+            Dialect::Sqlite => return self.sqlite_columns(&relation).await,
+            Dialect::Mysql => return self.mysql_columns(&relation).await,
+            Dialect::Postgres => {}
         }
         let rows = self
             .text_rows(format!(
@@ -161,7 +163,7 @@ impl DatabaseSession {
         let select_list = if columns.is_empty() {
             "NULL".to_string()
         } else {
-            columns.iter().map(|column| dialect.cell(&quote_identifier(&column.name))).collect::<Vec<_>>().join(", ")
+            columns.iter().map(|column| dialect.cell(&quote_identifier(&column.name), &column.column_type)).collect::<Vec<_>>().join(", ")
         };
         let mut sql = format!("SELECT {select_list} FROM {}", relation.quoted_name());
         sql += &where_clause(&filters, &columns, dialect)?;
@@ -183,8 +185,10 @@ impl DatabaseSession {
     /// partitioned table adds up its partitions.
     pub async fn estimated_row_count(&self, relation: Relation) -> Result<Option<u64>, DatabaseError> {
         // SQLite keeps no row estimate; a file database counts quickly.
-        if self.dialect() == Dialect::Sqlite {
-            return self.row_count(relation, Vec::new(), Vec::new()).await.map(Some);
+        match self.dialect() {
+            Dialect::Sqlite => return self.row_count(relation, Vec::new(), Vec::new()).await.map(Some),
+            Dialect::Mysql => return self.mysql_estimated_row_count(&relation).await,
+            Dialect::Postgres => {}
         }
         let name = quote_literal(&relation.quoted_name())?;
         let sql = format!(
@@ -227,6 +231,8 @@ impl DatabaseSession {
 pub(crate) enum Dialect {
     Postgres,
     Sqlite,
+    /// TablePort's own MySQL connection, in ANSI_QUOTES mode.
+    Mysql,
 }
 
 impl Dialect {
@@ -235,29 +241,34 @@ impl Dialect {
         match self {
             Dialect::Postgres => format!("{expression}::text"),
             Dialect::Sqlite => format!("CAST({expression} AS TEXT)"),
+            Dialect::Mysql => format!("CAST({expression} AS CHAR)"),
         }
     }
 
     /// A grid cell: the first GRID_CELL_LIMIT characters as text. SQLite
-    /// blobs show as `\x…` hex, as PostgreSQL shows bytea.
-    fn cell(self, column: &str) -> String {
+    /// and MySQL blobs show as `\x…` hex, as PostgreSQL shows bytea.
+    fn cell(self, column: &str, column_type: &str) -> String {
         match self {
             Dialect::Postgres => format!("left({column}::text, {GRID_CELL_LIMIT})"),
             Dialect::Sqlite => format!(
                 "CASE WHEN typeof({column}) = 'blob' THEN '\\x' || lower(hex({column})) \
                  ELSE substr(CAST({column} AS TEXT), 1, {GRID_CELL_LIMIT}) END"
             ),
+            Dialect::Mysql if is_mysql_binary(column_type) => format!("LEFT(CONCAT('\\x', LOWER(HEX({column}))), {GRID_CELL_LIMIT})"),
+            Dialect::Mysql => format!("LEFT(CAST({column} AS CHAR), {GRID_CELL_LIMIT})"),
         }
     }
 
     /// The whole value as text, for copies and full values: SQLite blobs
     /// as `\\x…` hex.
-    pub(crate) fn full_text(self, column: &str) -> String {
+    pub(crate) fn full_text(self, column: &str, column_type: &str) -> String {
         match self {
             Dialect::Postgres => format!("{column}::text"),
             Dialect::Sqlite => {
                 format!("CASE WHEN typeof({column}) = 'blob' THEN '\\x' || lower(hex({column})) ELSE CAST({column} AS TEXT) END")
             }
+            Dialect::Mysql if is_mysql_binary(column_type) => format!("CONCAT('\\x', LOWER(HEX({column})))"),
+            Dialect::Mysql => format!("CAST({column} AS CHAR)"),
         }
     }
 
@@ -267,16 +278,24 @@ impl Dialect {
         match self {
             Dialect::Postgres => format!("{text} {not}ILIKE {pattern}"),
             // SQLite's LIKE ignores case (for ASCII) and has no default escape.
-            Dialect::Sqlite => format!("{text} {not}LIKE {pattern} ESCAPE '\\'"),
+            Dialect::Sqlite | Dialect::Mysql => format!("{text} {not}LIKE {pattern} ESCAPE '\\'"),
         }
     }
 
-    fn is_distinct_from(self) -> &'static str {
+    /// `left` differs from `right`, where NULL differs from any value.
+    fn distinct(self, left: &str, right: &str) -> String {
         match self {
-            Dialect::Postgres => "IS DISTINCT FROM",
-            Dialect::Sqlite => "IS NOT",
+            Dialect::Postgres => format!("{left} IS DISTINCT FROM {right}"),
+            Dialect::Sqlite => format!("{left} IS NOT {right}"),
+            Dialect::Mysql => format!("NOT ({left} <=> {right})"),
         }
     }
+}
+
+/// BLOB, BINARY and VARBINARY columns, shown as hex.
+fn is_mysql_binary(column_type: &str) -> bool {
+    let column_type = column_type.to_ascii_lowercase();
+    column_type.contains("blob") || column_type.contains("binary")
 }
 
 /// `"name"`, with inner quotes doubled.
@@ -355,7 +374,7 @@ fn condition(column: &str, as_text: bool, operator: FilterOperator, value: &str,
     };
     Ok(match operator {
         FilterOperator::Equals => format!("{typed} = {}", quote_literal(value)?),
-        FilterOperator::NotEquals => format!("{typed} {} {}", dialect.is_distinct_from(), quote_literal(value)?),
+        FilterOperator::NotEquals => dialect.distinct(&typed, &quote_literal(value)?),
         FilterOperator::GreaterThan => format!("{typed} > {}", quote_literal(value)?),
         FilterOperator::GreaterOrEqual => format!("{typed} >= {}", quote_literal(value)?),
         FilterOperator::LessThan => format!("{typed} < {}", quote_literal(value)?),

@@ -78,6 +78,27 @@ impl DatabaseError {
     }
 }
 
+impl DatabaseError {
+    /// The server's message when there is one; otherwise a short reason,
+    /// prefixed with the endpoint for connection failures.
+    pub(crate) fn from_mysql(error: mysql_async::Error, endpoint: &str) -> Self {
+        match error {
+            mysql_async::Error::Server(server) => Self::new(server.message),
+            mysql_async::Error::Io(mysql_async::IoError::Io(io)) => Self::new(format!("Could not reach {endpoint}: {}.", io_reason(&io))),
+            mysql_async::Error::Io(mysql_async::IoError::Tls(tls)) => Self::new(format!("TLS with {endpoint} failed: {tls}")),
+            mysql_async::Error::Driver(mysql_async::DriverError::NoClientSslFlagFromServer) => Self::Failed {
+                message: format!("{endpoint} does not accept TLS connections."),
+                detail: None,
+                hint: Some("Set TLS to “disable” or “prefer”.".into()),
+                position: None,
+            },
+            mysql_async::Error::Driver(mysql_async::DriverError::ConnectionClosed) => Self::new("The server closed the connection."),
+            mysql_async::Error::Other(other) => Self::new(other.to_string()),
+            other => Self::new(other.to_string()),
+        }
+    }
+}
+
 fn io_reason(error: &io::Error) -> String {
     match error.kind() {
         io::ErrorKind::ConnectionRefused => "Connection refused".into(),

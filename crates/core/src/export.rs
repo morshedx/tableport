@@ -148,7 +148,7 @@ impl DatabaseSession {
         let dialect = self.dialect();
         let key_list = primary_key.iter().map(|name| dialect.text(&quote_identifier(name))).collect::<Vec<_>>().join(", ");
         let value_list =
-            columns.iter().map(|column| dialect.full_text(&quote_identifier(&column.name))).collect::<Vec<_>>().join(", ");
+            columns.iter().map(|column| dialect.full_text(&quote_identifier(&column.name), &column.column_type)).collect::<Vec<_>>().join(", ");
         let sql = format!(
             "SELECT {key_list}, {value_list} FROM {} WHERE {}",
             relation.quoted_name(),

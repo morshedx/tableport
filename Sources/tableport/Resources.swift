@@ -80,26 +80,38 @@ struct EngineLogo: View {
         case .postgres:
             PostgresLogo(size: size)
         case .sqlite:
-            if let image = Self.sqlite {
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.high)
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: size, height: size)
-                    .accessibilityLabel("SQLite")
-            } else {
-                Text("Sl")
-                    .font(.system(size: size * 0.42, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: size, height: size)
-                    .background(RoundedRectangle(cornerRadius: size * 0.24).fill(Color(red: 0.06, green: 0.45, blue: 0.75)))
-                    .accessibilityLabel("SQLite")
-            }
+            logo(Self.sqlite, label: "SQLite", letters: "Sl", color: Color(red: 0.06, green: 0.45, blue: 0.75))
+        case .mysql:
+            logo(Self.mysql, label: "MySQL", letters: "My", color: Color(red: 0.27, green: 0.47, blue: 0.63))
         }
     }
 
-    private static let sqlite: NSImage? = Bundle.resources?.url(forResource: "sqlite", withExtension: "svg")
-        .flatMap(NSImage.init(contentsOf:))
+    /// The engine's own logo, or its letters on a tile if the file is missing.
+    @ViewBuilder
+    private func logo(_ image: NSImage?, label: String, letters: String, color: Color) -> some View {
+        if let image {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fit)
+                .frame(width: size, height: size)
+                .accessibilityLabel(label)
+        } else {
+            Text(letters)
+                .font(.system(size: size * 0.42, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: size, height: size)
+                .background(RoundedRectangle(cornerRadius: size * 0.24).fill(color))
+                .accessibilityLabel(label)
+        }
+    }
+
+    private static func image(_ name: String) -> NSImage? {
+        Bundle.resources?.url(forResource: name, withExtension: "svg").flatMap(NSImage.init(contentsOf:))
+    }
+
+    private static let sqlite = image("sqlite")
+    private static let mysql = image("mysql")
 }
 
 struct PostgresLogo: View {

@@ -27,7 +27,7 @@ pub enum SqlFunction {
 impl SqlFunction {
     fn sql(self, engine: Engine) -> &'static str {
         match (self, engine) {
-            (Self::Now, Engine::Postgres) => "now()",
+            (Self::Now, Engine::Postgres | Engine::Mysql) => "now()",
             (Self::Now, Engine::Sqlite) => "CURRENT_TIMESTAMP",
             (Self::CurrentDate, _) => "CURRENT_DATE",
             (Self::CurrentTime, _) => "CURRENT_TIME",
