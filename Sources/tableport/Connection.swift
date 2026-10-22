@@ -38,6 +38,10 @@ struct SavedConnection: Codable, Identifiable, Hashable {
     var ssh: SavedSSH?
     /// The server refuses every change; the grid offers no editing.
     var readOnly = false
+    /// AI tools may read it through TablePort's MCP server (always read-only).
+    var aiAccess = false
+    /// With AI access: every database on the same server, with the same login.
+    var aiAllDatabases = false
 
     /// "host : database", the second line of a row.
     var subtitle: String {
@@ -96,6 +100,8 @@ extension SavedConnection {
         tls = try container.decodeIfPresent(TlsMode.self, forKey: .tls) ?? .prefer
         ssh = try container.decodeIfPresent(SavedSSH.self, forKey: .ssh)
         readOnly = try container.decodeIfPresent(Bool.self, forKey: .readOnly) ?? false
+        aiAccess = try container.decodeIfPresent(Bool.self, forKey: .aiAccess) ?? false
+        aiAllDatabases = try container.decodeIfPresent(Bool.self, forKey: .aiAllDatabases) ?? false
     }
 }
 

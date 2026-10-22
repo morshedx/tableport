@@ -21,7 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Set once quitting starts: closing windows then must not drop them
     /// from the saved session.
     private var isTerminating = false
-    private lazy var settingsWindow = makeSettingsWindow()
+    private let aiAccess = AiAccess()
+    private lazy var settingsWindow = makeSettingsWindow(store: store, aiAccess: aiAccess)
     private lazy var connectionsWindow = HostedWindow(
         size: NSSize(width: 700, height: 480),
         autosaveName: "ConnectionsWindow"
@@ -66,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return trusted
         }
         connectionsWindow.show()
+        aiAccess.start(store: store)
         restoreSession()
         // Saved every few seconds too, so a crash loses little.
         sessionTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in

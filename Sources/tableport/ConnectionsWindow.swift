@@ -32,8 +32,11 @@ struct ConnectionsView: View {
             .background(Theme.card)
         }
         .ignoresSafeArea()
-        .sheet(item: $editing) { target in
-            ConnectionForm(target: target, store: store)
+        // Its own window rather than a sheet, so it can be moved.
+        .onChange(of: editing?.id) { _, _ in
+            guard let target = editing else { return }
+            editing = nil
+            ConnectionFormWindow.show(target, store: store, over: NSApp.keyWindow)
         }
         .onChange(of: manager.requestNewConnection, initial: true) { _, requested in
             guard requested else { return }
