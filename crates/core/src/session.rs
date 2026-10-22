@@ -34,6 +34,9 @@ pub enum Engine {
     /// libSQL or Turso: SQLite on a server. `database` is its URL
     /// (libsql://…, https://…) and `password` its auth token.
     Libsql,
+    /// Redis or Valkey. `user` is an ACL user (empty for the default), and
+    /// `database` the logical database to start in ("0").
+    Redis,
 }
 
 impl Engine {
@@ -65,7 +68,7 @@ impl ConnectionSettings {
     /// Where the connection goes, for messages: "host:port", or the file name.
     pub(crate) fn endpoint(&self) -> String {
         match self.engine {
-            Engine::Postgres | Engine::Mysql => format!("{}:{}", self.host, self.port),
+            Engine::Postgres | Engine::Mysql | Engine::Redis => format!("{}:{}", self.host, self.port),
             Engine::Sqlite => std::path::Path::new(&self.database)
                 .file_name()
                 .map_or_else(|| self.database.clone(), |name| name.to_string_lossy().into_owned()),
@@ -93,6 +96,7 @@ enum Link {
     Sqlite(crate::sqlite::SqliteLink),
     Mysql(crate::mysql::MysqlLink),
     Libsql(crate::libsql::LibsqlLink),
+    Redis(crate::redis::RedisLink),
 }
 
 struct PgLink {
@@ -127,6 +131,7 @@ impl DatabaseSession {
             Link::Sqlite(link) => link.version.clone(),
             Link::Mysql(link) => link.version.clone(),
             Link::Libsql(link) => link.version.clone(),
+            Link::Redis(link) => link.version.clone(),
         }
     }
 
@@ -154,6 +159,9 @@ impl DatabaseSession {
         if let Some(link) = self.mysql() {
             return on_runtime(async move { link.ping().await }).await;
         }
+        if let Ok(link) = self.redis() {
+            return on_runtime(async move { link.ping().await }).await;
+        }
         let client = self.client()?;
         let endpoint = self.settings.endpoint();
         on_runtime(async move {
@@ -177,6 +185,7 @@ impl DatabaseSession {
             Link::Sqlite(link) => link.is_closed(),
             Link::Mysql(link) => link.is_closed(),
             Link::Libsql(link) => link.is_closed(),
+            Link::Redis(link) => link.is_closed(),
         }
     }
 
@@ -186,6 +195,7 @@ impl DatabaseSession {
             Link::Sqlite(link) => link.close(),
             Link::Mysql(link) => link.close(),
             Link::Libsql(link) => link.close(),
+            Link::Redis(link) => link.close(),
         }
     }
 
@@ -228,7 +238,9 @@ impl DatabaseSession {
     pub(crate) fn client(&self) -> Result<Arc<Client>, DatabaseError> {
         match &*self.read_link() {
             Link::Postgres(link) => Ok(link.client.clone()),
-            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) => Err(DatabaseError::new("This needs a PostgreSQL connection.")),
+            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) => {
+                Err(DatabaseError::new("This needs a PostgreSQL connection."))
+            }
         }
     }
 
@@ -237,7 +249,15 @@ impl DatabaseSession {
         match &*self.read_link() {
             Link::Sqlite(link) => Some(crate::libsql::SqliteLike::File(link.clone())),
             Link::Libsql(link) => Some(crate::libsql::SqliteLike::Remote(link.clone())),
-            Link::Postgres(_) | Link::Mysql(_) => None,
+            Link::Postgres(_) | Link::Mysql(_) | Link::Redis(_) => None,
+        }
+    }
+
+    /// The Redis link; an error for the SQL engines.
+    pub(crate) fn redis(&self) -> Result<crate::redis::RedisLink, DatabaseError> {
+        match &*self.read_link() {
+            Link::Redis(link) => Ok(link.clone()),
+            _ => Err(DatabaseError::new("This needs a Redis connection.")),
         }
     }
 
@@ -245,7 +265,7 @@ impl DatabaseSession {
     pub(crate) fn mysql(&self) -> Option<crate::mysql::MysqlLink> {
         match &*self.read_link() {
             Link::Mysql(link) => Some(link.clone()),
-            Link::Postgres(_) | Link::Sqlite(_) | Link::Libsql(_) => None,
+            Link::Postgres(_) | Link::Sqlite(_) | Link::Libsql(_) | Link::Redis(_) => None,
         }
     }
 
@@ -254,13 +274,15 @@ impl DatabaseSession {
             Engine::Postgres => crate::rows::Dialect::Postgres,
             Engine::Sqlite | Engine::Libsql => crate::rows::Dialect::Sqlite,
             Engine::Mysql => crate::rows::Dialect::Mysql,
+            // Redis has no SQL; nothing asks for its dialect.
+            Engine::Redis => crate::rows::Dialect::Postgres,
         }
     }
 
     pub(crate) fn tls(&self) -> Option<postgres_native_tls::MakeTlsConnector> {
         match &*self.read_link() {
             Link::Postgres(link) => link.tls.clone(),
-            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) => None,
+            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) => None,
         }
     }
 
@@ -281,6 +303,7 @@ async fn open_link(settings: &ConnectionSettings) -> Result<Link, DatabaseError>
         Engine::Sqlite => crate::sqlite::SqliteLink::open(settings).await.map(Link::Sqlite),
         Engine::Mysql => crate::mysql::MysqlLink::open(settings).await.map(Link::Mysql),
         Engine::Libsql => crate::libsql::LibsqlLink::open(settings).await.map(Link::Libsql),
+        Engine::Redis => crate::redis::RedisLink::open(settings).await.map(Link::Redis),
     }
 }
 

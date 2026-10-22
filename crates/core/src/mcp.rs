@@ -37,6 +37,8 @@ pub struct McpConnection {
     pub all_databases: bool,
     /// production, staging…, so the AI tool can tell them apart.
     pub tag: Option<String>,
+    /// So the AI tool writes the right language: SQL, or Redis commands.
+    pub engine: crate::Engine,
 }
 
 /// One tool call, for the log the user sees in Settings › AI access.
@@ -237,7 +239,10 @@ impl State {
                 let summary = format!("{} connections", connections.len());
                 let lines: Vec<Value> = connections
                     .iter()
-                    .map(|c| json!({ "name": c.name, "database": c.database, "tag": c.tag, "all_databases_on_server": c.all_databases }))
+                    .map(|c| {
+                        json!({ "name": c.name, "engine": engine_name(c.engine), "database": c.database, "tag": c.tag,
+                                "all_databases_on_server": c.all_databases })
+                    })
                     .collect();
                 return Ok((serde_json::to_string_pretty(&lines).unwrap_or_default(), summary));
             }
@@ -247,6 +252,10 @@ impl State {
                 Some(database) if *database != connection.database => format!("{} / {database}", connection.name),
                 _ => connection.name.clone(),
             };
+            if session.engine() == crate::Engine::Redis {
+                let _turn = lock.lock().await;
+                return redis_tool(&session, &tool, &arguments).await;
+            }
             match tool.as_str() {
                 "list_databases" => {
                     let databases =
@@ -352,13 +361,72 @@ fn error_reply(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
+fn engine_name(engine: crate::Engine) -> &'static str {
+    match engine {
+        crate::Engine::Postgres => "PostgreSQL",
+        crate::Engine::Mysql => "MySQL",
+        crate::Engine::Sqlite => "SQLite",
+        crate::Engine::Libsql => "libSQL",
+        crate::Engine::Redis => "Redis",
+    }
+}
+
+/// The tools on a Redis connection: keys instead of tables, and read
+/// commands instead of SQL.
+async fn redis_tool(session: &DatabaseSession, tool: &str, arguments: &Value) -> Result<(String, String), DatabaseError> {
+    let database: u32 = session.settings().database.trim().parse().unwrap_or(0);
+    let text = |name: &str| arguments.get(name).and_then(Value::as_str).map(str::to_string);
+    match tool {
+        "list_databases" => {
+            let databases = session.redis_databases().await?;
+            let body: Vec<Value> = databases.iter().filter(|db| db.keys > 0).map(|db| json!({ "database": db.index.to_string(), "keys": db.keys })).collect();
+            Ok((serde_json::to_string_pretty(&body).unwrap_or_default(), format!("{} databases with keys", body.len())))
+        }
+        "list_tables" => {
+            // The first keys only: SCAN in a few pages, never KEYS.
+            let mut keys = Vec::new();
+            let mut cursor = 0;
+            loop {
+                let page = session.redis_scan(database, "*".into(), cursor, 500).await?;
+                keys.extend(page.keys);
+                cursor = page.cursor;
+                if cursor == 0 || keys.len() >= 500 {
+                    break;
+                }
+            }
+            let truncated = cursor != 0;
+            let lines: Vec<String> = keys.iter().map(|key| format!("{} ({:?})", key.name, key.kind).to_lowercase()).collect();
+            let summary = format!("{}{} keys", lines.len(), if truncated { "+" } else { "" });
+            let note = if truncated { "\n… more keys exist; run SCAN with MATCH to find others." } else { "" };
+            Ok((format!("{}{note}", lines.join("\n")), summary))
+        }
+        "describe_table" => {
+            let key = text("table").ok_or_else(|| DatabaseError::new("Give the key's name as table."))?;
+            let value = session.redis_value(database, key, 100).await?;
+            let body = json!({
+                "key": value.key, "type": value.type_name, "ttl_seconds": value.ttl_seconds, "length": value.length,
+                "value": value.text,
+                "items": value.items.iter().map(|item| json!({ "field": item.field, "value": item.value, "score": item.score })).collect::<Vec<_>>(),
+            });
+            Ok((serde_json::to_string_pretty(&body).unwrap_or_default(), format!("{} {}", value.type_name, value.length)))
+        }
+        "run_read_query" => {
+            let line = text("sql").ok_or_else(|| DatabaseError::new("Give the Redis command as sql."))?;
+            let reply = session.redis_read_command(database, line).await?;
+            let summary = format!("{} lines", reply.lines().count());
+            Ok((reply, summary))
+        }
+        _ => Err(DatabaseError::new(format!("{tool} isn't available on Redis connections."))),
+    }
+}
+
 fn tool_definitions() -> Value {
     let connection = json!({ "type": "string", "description": "The connection's name, from list_connections. May be left out when only one connection is allowed." });
     let database = json!({ "type": "string", "description": "A database on the connection's server, from list_databases. Defaults to the connection's own database." });
     json!([
         {
             "name": "list_connections",
-            "description": "The PostgreSQL connections the user allowed for AI access in TablePort.",
+            "description": "The connections the user allowed for AI access in TablePort, with each one's engine: PostgreSQL, MySQL, SQLite, libSQL or Redis.",
             "inputSchema": { "type": "object", "properties": {} },
             "annotations": { "readOnlyHint": true },
         },
@@ -370,13 +438,13 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "list_tables",
-            "description": "Schemas with their tables, views and materialized views.",
+            "description": "Schemas with their tables and views. On Redis: the first keys, with their types.",
             "inputSchema": { "type": "object", "properties": { "connection": connection, "database": database } },
             "annotations": { "readOnlyHint": true },
         },
         {
             "name": "describe_table",
-            "description": "A table's columns (type, NULL, default, comment), primary key, foreign keys and indexes.",
+            "description": "A table's columns (type, NULL, default, comment), primary key, foreign keys and indexes. On Redis: the key named as table, with its type, expiry and value.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -391,8 +459,9 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "run_read_query",
-            "description": "Runs one read-only query (SELECT, WITH … SELECT, VALUES, TABLE) and returns its rows as JSON. \
-                Changes to data are refused. At most max_rows rows (default 100, up to 1000); 30 s time limit.",
+            "description": "Runs one read-only query (SELECT, WITH … SELECT, VALUES, TABLE) in the connection's SQL dialect and returns its rows as JSON. \
+                Changes to data are refused. At most max_rows rows (default 100, up to 1000); 30 s time limit. \
+                On Redis: one read command (GET, HGETALL, LRANGE, SCAN, ZRANGE…) as sql; writes, scripts and KEYS are refused.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -407,7 +476,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "explain_query",
-            "description": "PostgreSQL's plan for a query, without running it (EXPLAIN, not EXPLAIN ANALYZE).",
+            "description": "The database's plan for a read query, without running it. Not on Redis.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "connection": connection, "database": database, "sql": { "type": "string" } },

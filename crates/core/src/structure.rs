@@ -55,6 +55,7 @@ impl DatabaseSession {
         match self.engine() {
             Engine::Sqlite | Engine::Libsql => return self.sqlite_structure(&relation).await,
             Engine::Mysql => return self.mysql_structure(&relation).await,
+            Engine::Redis => return Err(DatabaseError::new("Redis keys have no table structure.")),
             Engine::Postgres => {}
         }
         let regclass = relation.regclass()?;
@@ -184,6 +185,7 @@ pub fn structure_change_sql(relation: Relation, change: StructureChange, engine:
     match engine {
         Engine::Sqlite | Engine::Libsql => return sqlite_structure_change_sql(&relation, change),
         Engine::Mysql => return crate::mysql::structure_change_sql(&relation, &change, None),
+        Engine::Redis => return Err(DatabaseError::new("Redis keys have no table structure.")),
         Engine::Postgres => {}
     }
     let table = format!("ALTER TABLE {}", relation.quoted_name());

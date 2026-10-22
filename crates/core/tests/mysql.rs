@@ -430,8 +430,7 @@ impl tableport_core::McpHost for MysqlHost {
             name: "Server".into(),
             database: self.settings.database.clone(),
             all_databases: false,
-            tag: None,
-        }]
+            tag: None, engine: tableport_core::Engine::Mysql }]
     }
 
     fn settings(&self, _connection_id: String) -> Option<ConnectionSettings> {

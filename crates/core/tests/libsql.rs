@@ -38,7 +38,7 @@ struct Host {
 
 impl McpHost for Host {
     fn connections(&self) -> Vec<McpConnection> {
-        vec![McpConnection { id: "turso".into(), name: "Turso".into(), database: self.settings.database.clone(), all_databases: false, tag: None }]
+        vec![McpConnection { id: "turso".into(), name: "Turso".into(), database: self.settings.database.clone(), all_databases: false, tag: None, engine: Engine::Libsql }]
     }
 
     fn settings(&self, _connection_id: String) -> Option<ConnectionSettings> {

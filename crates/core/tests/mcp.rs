@@ -15,8 +15,8 @@ struct Host {
 impl McpHost for Host {
     fn connections(&self) -> Vec<McpConnection> {
         vec![
-            McpConnection { id: "local-id".into(), name: "Local".into(), database: "postgres".into(), all_databases: false, tag: None },
-            McpConnection { id: "server-id".into(), name: "Server".into(), database: "postgres".into(), all_databases: true, tag: Some("local".into()) },
+            McpConnection { id: "local-id".into(), name: "Local".into(), database: "postgres".into(), all_databases: false, tag: None, engine: tableport_core::Engine::Postgres },
+            McpConnection { id: "server-id".into(), name: "Server".into(), database: "postgres".into(), all_databases: true, tag: Some("local".into()), engine: tableport_core::Engine::Postgres },
         ]
     }
 
@@ -134,7 +134,7 @@ struct SqliteHost {
 
 impl McpHost for SqliteHost {
     fn connections(&self) -> Vec<McpConnection> {
-        vec![McpConnection { id: "file".into(), name: "File".into(), database: self.path.clone(), all_databases: false, tag: None }]
+        vec![McpConnection { id: "file".into(), name: "File".into(), database: self.path.clone(), all_databases: false, tag: None, engine: tableport_core::Engine::Sqlite }]
     }
 
     fn settings(&self, _connection_id: String) -> Option<ConnectionSettings> {

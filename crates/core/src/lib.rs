@@ -13,6 +13,7 @@ mod mcp;
 mod libsql;
 mod mysql;
 mod query;
+mod redis;
 mod rows;
 mod schema;
 mod session;
@@ -30,6 +31,7 @@ pub use error::DatabaseError;
 pub use export::{rows_to_csv, rows_to_insert_sql, rows_to_json, ExportFormat, ExportScope};
 pub use mcp::{run_mcp_bridge, start_mcp_server, McpConnection, McpHost, McpLogEntry, McpServer};
 pub use query::{QueryResult, ResultSet};
+pub use redis::{redis_change_commands, RedisChange, RedisDatabase, RedisItem, RedisKey, RedisKeyKind, RedisKeyPage, RedisValue};
 pub use rows::{grid_cell_limit, Column, ColumnKind, FilterOperator, FilterTarget, RowFilter, RowPage, RowSort, GRID_CELL_LIMIT};
 pub use schema::{
     drop_relation_sql, drop_routine_sql, qualified_name, refresh_materialized_view_sql, truncate_sql, ForeignKey, Relation,
