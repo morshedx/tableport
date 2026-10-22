@@ -4778,6 +4778,11 @@ public enum Engine: Equatable, Hashable {
      * database of the server.
      */
     case mysql
+    /**
+     * libSQL or Turso: SQLite on a server. `database` is its URL
+     * (libsql://…, https://…) and `password` its auth token.
+     */
+    case libsql
 
 
 
@@ -4805,6 +4810,8 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         
         case 3: return .mysql
         
+        case 4: return .libsql
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -4823,6 +4830,10 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         
         case .mysql:
             writeInt(&buf, Int32(3))
+        
+        
+        case .libsql:
+            writeInt(&buf, Int32(4))
         
         }
     }

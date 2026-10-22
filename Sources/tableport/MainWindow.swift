@@ -144,6 +144,7 @@ final class WorkspaceModel: ObservableObject {
     var endpointText: String {
         let settings = session.settings()
         if settings.engine == .sqlite { return (settings.database as NSString).abbreviatingWithTildeInPath }
+        if settings.engine == .libsql { return settings.database }
         let endpoint = "\(settings.user)@\(settings.host):\(settings.port)/\(settings.database)"
         return settings.ssh.map { "\(endpoint) via SSH \($0.user)@\($0.host):\($0.port)" } ?? endpoint
     }
@@ -672,6 +673,14 @@ private struct HeaderBar: View {
                     Text(model.connection.host)
                 }
                 .help("\(model.connection.host):\(model.connection.port)")
+            } else if model.connection.engine == .libsql {
+                // One database at one URL.
+                HeaderChip {
+                    headerLucide("database")
+                } label: {
+                    Text(model.connection.libsqlHost)
+                }
+                .help(model.connection.database)
             } else {
             Menu {
                 ForEach(model.databases, id: \.self) { name in

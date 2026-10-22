@@ -84,6 +84,8 @@ struct EngineLogo: View {
         case .mysql:
             // One colour, so it can lighten in dark mode, where MySQL's blue is too dark to see.
             logo(Self.mysql, label: "MySQL", letters: "My", color: Self.mysqlBlue, tint: true)
+        case .libsql:
+            logo(Self.turso, label: "libSQL", letters: "Tu", color: Self.tursoTeal, tint: true)
         }
     }
 
@@ -115,6 +117,13 @@ struct EngineLogo: View {
 
     private static let sqlite = image("sqlite")
     private static let mysql = image("mysql")
+    private static let turso = image("turso")
+    /// Turso's own teal in dark mode; darker in light mode, where it would vanish.
+    private static let tursoTeal = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(red: 0.31, green: 0.97, blue: 0.82, alpha: 1)
+            : NSColor(red: 0.10, green: 0.62, blue: 0.54, alpha: 1)
+    })
     private static let mysqlBlue = Color(nsColor: NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             ? NSColor(red: 0.47, green: 0.66, blue: 0.84, alpha: 1)

@@ -59,8 +59,8 @@ struct ConnectionForm: View {
         self.store = store
         self.onClose = onClose
         _engine = State(initialValue: engine)
-        if engine == .sqlite {
-            // A file has no server defaults.
+        if engine.isSqlite {
+            // A file or a URL has no server defaults.
             _host = State(initialValue: "")
             _database = State(initialValue: "")
             _user = State(initialValue: "")
@@ -100,7 +100,7 @@ struct ConnectionForm: View {
     }
 
     private var isServerComplete: Bool {
-        if engine == .sqlite { return !trimmed(database).isEmpty }
+        if engine.isSqlite { return !trimmed(database).isEmpty }
         // MySQL shows every database of the server; naming one is optional.
         let hasDatabase = engine == .mysql || !trimmed(database).isEmpty
         return !trimmed(host).isEmpty && hasDatabase && !trimmed(user).isEmpty && number(port) != nil
@@ -131,7 +131,7 @@ struct ConnectionForm: View {
                 .padding(.bottom, 14)
             VStack(alignment: .leading, spacing: 14) {
                 // URLs are for servers; a file is chosen on the Connection tab.
-                if engine != .sqlite { urlBar }
+                if !engine.isSqlite { urlBar }
                 tabBar
                 Group {
                     switch tab {
@@ -194,7 +194,7 @@ struct ConnectionForm: View {
 
     /// A file needs no SSH tunnel.
     private var tabs: [FormTab] {
-        engine == .sqlite ? [.connection, .access] : FormTab.allCases
+        engine.isSqlite ? [.connection, .access] : FormTab.allCases
     }
 
     private func dot(for tab: FormTab) -> Color? {
@@ -211,7 +211,11 @@ struct ConnectionForm: View {
 
     @ViewBuilder
     private var connectionTab: some View {
-        if engine == .sqlite { sqliteTab } else { serverTab }
+        switch engine {
+        case .sqlite: sqliteTab
+        case .libsql: libsqlTab
+        case .postgres, .mysql: serverTab
+        }
     }
 
     /// A SQLite file: the connection's name and tag, and the file.
@@ -235,6 +239,49 @@ struct ConnectionForm: View {
                     }
                 }
             }
+        }
+    }
+
+    /// A libSQL server or Turso database: its URL and auth token.
+    private var libsqlTab: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            FormCard("Connection") {
+                FormRow("Name") {
+                    TextField("Name", text: $name, prompt: Text("My database"))
+                }
+                FormRow("Tag") {
+                    tagChips
+                }
+                SwitchRow("Read-only", hint: "Browse and query, never change data. TablePort refuses every write.",
+                          isOn: $readOnly)
+            }
+            FormCard("Database") {
+                FormRow("URL") {
+                    TextField("URL", text: $database, prompt: Text("libsql://my-db-org.turso.io"))
+                }
+                FormRow("Token") {
+                    HStack(spacing: 6) {
+                        Group {
+                            if showsPassword {
+                                TextField("Token", text: $password, prompt: Text("none, for a local server"))
+                            } else {
+                                SecureField("Token", text: $password, prompt: Text("none, for a local server"))
+                            }
+                        }
+                        Button {
+                            showsPassword.toggle()
+                        } label: {
+                            Image(systemName: showsPassword ? "eye.slash" : "eye")
+                                .foregroundStyle(Theme.inkSecondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .help(showsPassword ? "Hide the token" : "Show the token")
+                    }
+                }
+            }
+            Text("Turso: create a token with turso db tokens create <database>.")
+                .font(Theme.meta)
+                .foregroundStyle(Theme.inkSecondary)
         }
     }
 
@@ -313,6 +360,13 @@ struct ConnectionForm: View {
             if engine == .mysql {
                 mysqlAccessWarning
             }
+            if engine == .libsql {
+                Label("For AI access, a read-only token is safest: turso db tokens create <database> --read-only.",
+                      systemImage: "info.circle")
+                    .font(Theme.meta)
+                    .foregroundStyle(Theme.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -361,8 +415,8 @@ struct ConnectionForm: View {
             }
             if isNew {
                 Picker("Database", selection: $engine) {
-                    ForEach([Engine.postgres, .mysql, .sqlite], id: \.self) { engine in
-                        Text(engine == .mysql ? "MySQL / MariaDB" : engine.label).tag(engine)
+                    ForEach([Engine.postgres, .mysql, .sqlite, .libsql], id: \.self) { engine in
+                        Text(engine == .mysql ? "MySQL / MariaDB" : engine == .libsql ? "libSQL / Turso" : engine.label).tag(engine)
                     }
                 }
                 .labelsHidden()
@@ -378,7 +432,7 @@ struct ConnectionForm: View {
         switch engine {
         case .postgres: ("5432", "postgres", "postgres")
         case .mysql: ("3306", "root", "")
-        case .sqlite: ("", "", "")
+        case .sqlite, .libsql: ("", "", "")
         }
     }
 
@@ -388,7 +442,7 @@ struct ConnectionForm: View {
         testState = .idle
         let before = Self.defaults(old)
         let after = Self.defaults(engine)
-        if engine == .sqlite {
+        if engine.isSqlite {
             if host == "localhost" { host = "" }
             if tab == .ssh { tab = .connection }
         } else if trimmed(host).isEmpty {
@@ -397,7 +451,8 @@ struct ConnectionForm: View {
         if port == before.port || trimmed(port).isEmpty { port = after.port }
         if user == before.user || trimmed(user).isEmpty { user = after.user }
         // A file's path is no server database, and back.
-        if database == before.database || database.contains("/") || old == .sqlite { database = after.database }
+        // A file's path or a URL is no server database, and back.
+        if database == before.database || database.contains("/") || old.isSqlite { database = after.database }
     }
 
     /// "PostgreSQL · user@host:port/database", or "SQLite · file", as the form stands.
@@ -405,6 +460,10 @@ struct ConnectionForm: View {
         if engine == .sqlite {
             let file = trimmed(database).isEmpty ? "choose a file" : (trimmed(database) as NSString).lastPathComponent
             return "SQLite · \(file)"
+        }
+        if engine == .libsql {
+            let host = URL(string: trimmed(database))?.host ?? (trimmed(database).isEmpty ? "enter a URL" : trimmed(database))
+            return "libSQL · \(host)"
         }
         let host = trimmed(self.host).isEmpty ? "host" : trimmed(self.host)
         if engine == .mysql {
@@ -562,7 +621,7 @@ struct ConnectionForm: View {
             // Short, to fit beside Test: "Connected · 17.7" or "Opened · SQLite 3.50"; the full version on hover.
             Label(engine == .sqlite ? "Opened · \(version)"
                   // "MySQL 8.4.13" → "8.4.13"; the server's name is in the header.
-                  : engine == .mysql ? "Connected · \(version.split(separator: " ").last.map(String.init) ?? version)"
+                  : engine == .mysql || engine == .libsql ? "Connected · \(version.split(separator: " ").last.map(String.init) ?? version)"
                   : "Connected · \(version.split(separator: " ").first.map(String.init) ?? version)",
                   systemImage: "checkmark.circle.fill")
                 .help("PostgreSQL \(version)")
@@ -633,6 +692,11 @@ struct ConnectionForm: View {
 
     /// The form's values as the core's settings, secrets included.
     private func settings() -> ConnectionSettings? {
+        if engine == .libsql {
+            return ConnectionSettings(host: "", port: 0, database: trimmed(database), user: "",
+                                      password: password.isEmpty ? nil : password, tls: .disable, ssh: nil, readOnly: readOnly,
+                                      engine: .libsql)
+        }
         if engine == .sqlite {
             return ConnectionSettings(host: "", port: 0, database: (trimmed(database) as NSString).expandingTildeInPath, user: "",
                                       password: nil, tls: .disable, ssh: nil, readOnly: readOnly, engine: .sqlite)
@@ -684,6 +748,7 @@ struct ConnectionForm: View {
 
     private func save() {
         if engine == .sqlite { return saveFile() }
+        if engine == .libsql { return saveRemote() }
         guard let port = number(port) else { return }
         var connection = SavedConnection(
             name: trimmed(name), host: trimmed(host), port: port,
@@ -715,6 +780,24 @@ struct ConnectionForm: View {
         } else {
             store.update(connection)
         }
+        testTask?.cancel()
+        onClose()
+    }
+
+    /// A libSQL connection: the URL, and the token in the Keychain.
+    private func saveRemote() {
+        var connection = SavedConnection(name: trimmed(name), host: "", port: 0, database: trimmed(database), user: "", tag: tag, tls: .disable)
+        connection.engine = .libsql
+        connection.readOnly = readOnly
+        connection.aiAccess = aiAccess
+        if case .edit(let existing) = target { connection.id = existing.id }
+        do {
+            try Keychain.setSecret(password, .databasePassword, for: connection.id)
+        } catch {
+            saveError = error.localizedDescription
+            return
+        }
+        if isNew { store.add(connection) } else { store.update(connection) }
         testTask?.cancel()
         onClose()
     }

@@ -45,14 +45,26 @@ struct SavedConnection: Codable, Identifiable, Hashable {
     /// PostgreSQL, or a SQLite file whose path is `database`.
     var engine: Engine = .postgres
 
-    /// "host : database", or a file's path, the second line of a row.
+    /// "host : database", a file's path, or a libSQL server's host: the second line of a row.
     var subtitle: String {
         if engine == .sqlite { return (database as NSString).abbreviatingWithTildeInPath }
+        if engine == .libsql { return libsqlHost }
         return ssh.map { "\(host) : \(database) via \($0.host)" } ?? "\(host) : \(database)"
+    }
+
+    /// The host of a libSQL URL: libsql://name-org.turso.io → name-org.turso.io.
+    var libsqlHost: String {
+        URL(string: database.trimmingCharacters(in: .whitespaces))?.host ?? database
     }
 
     /// The settings for the core, with the secrets read from the Keychain.
     func settings() throws -> ConnectionSettings {
+        if engine == .libsql {
+            // A URL and an auth token: TLS comes from https://, and there is no tunnel.
+            return ConnectionSettings(host: "", port: 0, database: database, user: "",
+                                      password: try Keychain.secret(.databasePassword, for: id), tls: .disable,
+                                      ssh: nil, readOnly: readOnly, engine: .libsql)
+        }
         if engine == .sqlite {
             // A file: no server, login, TLS or tunnel.
             return ConnectionSettings(host: "", port: 0, database: database, user: "", password: nil, tls: .disable,
@@ -89,6 +101,7 @@ extension Engine: Codable {
         case .postgres: "postgres"
         case .sqlite: "sqlite"
         case .mysql: "mysql"
+        case .libsql: "libsql"
         }
     }
 
@@ -97,6 +110,7 @@ extension Engine: Codable {
         self = switch name {
         case "sqlite": .sqlite
         case "mysql": .mysql
+        case "libsql": .libsql
         default: .postgres
         }
     }
@@ -111,8 +125,12 @@ extension Engine: Codable {
         case .postgres: "PostgreSQL"
         case .sqlite: "SQLite"
         case .mysql: "MySQL"
+        case .libsql: "libSQL"
         }
     }
+
+    /// SQLite's SQL and screens: a file, or a libSQL server.
+    var isSqlite: Bool { self == .sqlite || self == .libsql }
 }
 
 /// The SSH part of a saved connection. Its password or key passphrase is in

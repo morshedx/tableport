@@ -95,7 +95,7 @@ struct StructureView: View {
                 TableColumn("default") { cell($0.defaultValue) }
                 TableColumn("comment") { cell($0.comment) }
                     // SQLite has no column comments.
-                    .defaultVisibility(model.session.engine() == .sqlite ? .hidden : .visible)
+                    .defaultVisibility(model.session.engine().isSqlite ? .hidden : .visible)
             }
             .contextMenu(forSelectionType: ColumnDetail.ID.self) { names in
                 if let column = columns.first(where: { names.contains($0.name) }) {
@@ -294,7 +294,7 @@ private struct ChangeFooter: View {
 
     /// SQLite's rebuild starts by creating the changed table under a new name.
     private var isRebuild: Bool {
-        guard model.session.engine() == .sqlite, case .success(let statements) = preview else { return false }
+        guard model.session.engine().isSqlite, case .success(let statements) = preview else { return false }
         return statements.first?.hasPrefix("CREATE TABLE") == true
     }
 
@@ -443,7 +443,7 @@ private struct ColumnSheet: View {
                     .disabled(isGenerated)
                     .help(isGenerated ? "Identity and generated columns are changed in SQL" : "")
                 // SQLite has no column comments.
-                if model.session.engine() != .sqlite {
+                if !model.session.engine().isSqlite {
                     TextField("Comment", text: $comment, prompt: Text("none"))
                 }
             }
@@ -472,7 +472,7 @@ private func commonColumnTypes(_ engine: Engine) -> [String] {
     case .mysql:
         ["int", "bigint", "smallint", "tinyint(1)", "decimal(12,2)", "double", "varchar(255)", "text", "longtext",
          "date", "datetime", "timestamp", "time", "json", "blob", "enum('a','b')", "char(36)"]
-    case .sqlite:
+    case .sqlite, .libsql:
         ["INTEGER", "REAL", "TEXT", "BLOB", "NUMERIC"]
     }
 }
@@ -522,7 +522,7 @@ struct NewTableSheet: View {
         self.workspace = workspace
         _schema = State(initialValue: workspace.sidebar.schema)
         switch workspace.session.engine() {
-        case .sqlite:
+        case .sqlite, .libsql:
             // SQLite's INTEGER PRIMARY KEY numbers new rows itself.
             _rows = State(initialValue: [
                 Row(name: "id", columnType: "INTEGER", primaryKey: true, nullable: false),
