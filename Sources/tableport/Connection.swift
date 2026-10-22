@@ -77,7 +77,7 @@ struct SavedConnection: Codable, Identifiable, Hashable {
                 )
             },
             readOnly: readOnly,
-            engine: .postgres
+            engine: engine
         )
     }
 }

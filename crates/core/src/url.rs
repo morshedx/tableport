@@ -1,4 +1,4 @@
-use crate::{DatabaseError, TlsMode};
+use crate::{DatabaseError, Engine, TlsMode};
 
 /// What a `postgres://` URL says. Missing parts stay None, so the form keeps
 /// its own values for them.
@@ -10,10 +10,13 @@ pub struct ParsedUrl {
     pub user: Option<String>,
     pub password: Option<String>,
     pub tls: Option<TlsMode>,
+    /// PostgreSQL for postgres://, MySQL for mysql:// and mariadb://.
+    pub engine: Engine,
 }
 
 /// Reads `postgres://user:password@host:port/database?sslmode=…`, also with
-/// `postgresql://` and percent-encoded parts, as libpq does.
+/// `postgresql://` and percent-encoded parts, as libpq does; and
+/// `mysql://` or `mariadb://` URLs with `ssl-mode`.
 ///
 /// Read by hand rather than with tokio-postgres' parser, which refuses the
 /// whole URL for any parameter it doesn't know. Real URLs carry many: Prisma
@@ -22,10 +25,13 @@ pub struct ParsedUrl {
 #[uniffi::export]
 pub fn parse_connection_url(url: &str) -> Result<ParsedUrl, DatabaseError> {
     let url = url.trim();
-    let rest = url
-        .strip_prefix("postgresql://")
-        .or_else(|| url.strip_prefix("postgres://"))
-        .ok_or_else(|| DatabaseError::new("A connection URL starts with postgres:// or postgresql://."))?;
+    let (engine, rest) = if let Some(rest) = url.strip_prefix("postgresql://").or_else(|| url.strip_prefix("postgres://")) {
+        (Engine::Postgres, rest)
+    } else if let Some(rest) = url.strip_prefix("mysql://").or_else(|| url.strip_prefix("mariadb://")) {
+        (Engine::Mysql, rest)
+    } else {
+        return Err(DatabaseError::new("A connection URL starts with postgres://, postgresql://, mysql:// or mariadb://."));
+    };
     let (rest, query) = rest.split_once('?').unwrap_or((rest, ""));
     let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
 
@@ -34,7 +40,7 @@ pub fn parse_connection_url(url: &str) -> Result<ParsedUrl, DatabaseError> {
         Some((credentials, hosts)) => (Some(credentials), hosts),
         None => (None, authority),
     };
-    let mut parsed = ParsedUrl { host: None, port: None, database: None, user: None, password: None, tls: None };
+    let mut parsed = ParsedUrl { host: None, port: None, database: None, user: None, password: None, tls: None, engine };
     if let Some(credentials) = credentials {
         let (user, password) = match credentials.split_once(':') {
             Some((user, password)) => (user, Some(password)),
@@ -56,6 +62,8 @@ pub fn parse_connection_url(url: &str) -> Result<ParsedUrl, DatabaseError> {
         let value = decode(value)?;
         match key {
             "sslmode" => parsed.tls = Some(tls_mode(&value)?),
+            // MySQL's client spells it ssl-mode, in capitals.
+            "ssl-mode" | "ssl_mode" => parsed.tls = Some(tls_mode(&value.to_ascii_lowercase().replace('_', "-"))?),
             "host" => parsed.host = non_empty(value),
             "port" => parsed.port = Some(parse_port(&value)?),
             "dbname" => parsed.database = non_empty(value),
@@ -64,9 +72,9 @@ pub fn parse_connection_url(url: &str) -> Result<ParsedUrl, DatabaseError> {
             _ => {}
         }
     }
-    // As libpq: no port means PostgreSQL's default.
+    // No port means the engine's default.
     if parsed.host.is_some() && parsed.port.is_none() {
-        parsed.port = Some(5432);
+        parsed.port = Some(if engine == Engine::Mysql { 3306 } else { 5432 });
     }
     Ok(parsed)
 }
@@ -95,10 +103,10 @@ fn parse_port(text: &str) -> Result<u16, DatabaseError> {
 /// without checking the certificate, which is what require does here).
 fn tls_mode(value: &str) -> Result<TlsMode, DatabaseError> {
     Ok(match value {
-        "disable" => TlsMode::Disable,
-        "allow" | "prefer" => TlsMode::Prefer,
-        "require" | "no-verify" => TlsMode::Require,
-        "verify-ca" | "verify-full" => TlsMode::VerifyFull,
+        "disable" | "disabled" => TlsMode::Disable,
+        "allow" | "prefer" | "preferred" => TlsMode::Prefer,
+        "require" | "required" | "no-verify" => TlsMode::Require,
+        "verify-ca" | "verify-full" | "verify-identity" => TlsMode::VerifyFull,
         other => return Err(DatabaseError::new(format!("This URL can't be read: “{other}” is not an sslmode."))),
     })
 }

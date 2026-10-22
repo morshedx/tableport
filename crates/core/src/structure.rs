@@ -399,8 +399,11 @@ pub fn create_table_sql(schema: String, name: String, columns: Vec<NewTableColum
         if !column.nullable && !entry.primary_key {
             definition += " NOT NULL";
         }
-        if let Some(default) = non_empty(&column.default_value) {
-            definition += &format!(" DEFAULT {default}");
+        match non_empty(&column.default_value) {
+            // MySQL numbers rows with a column attribute, not a default.
+            Some("AUTO_INCREMENT") if engine == Engine::Mysql => definition += " AUTO_INCREMENT",
+            Some(default) => definition += &format!(" DEFAULT {default}"),
+            None => {}
         }
         // MySQL keeps a column's comment in its definition.
         if let (Engine::Mysql, Some(comment)) = (engine, non_empty(&column.comment)) {

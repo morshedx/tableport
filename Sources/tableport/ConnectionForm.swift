@@ -101,7 +101,9 @@ struct ConnectionForm: View {
 
     private var isServerComplete: Bool {
         if engine == .sqlite { return !trimmed(database).isEmpty }
-        return !trimmed(host).isEmpty && !trimmed(database).isEmpty && !trimmed(user).isEmpty && number(port) != nil
+        // MySQL shows every database of the server; naming one is optional.
+        let hasDatabase = engine == .mysql || !trimmed(database).isEmpty
+        return !trimmed(host).isEmpty && hasDatabase && !trimmed(user).isEmpty && number(port) != nil
     }
 
     private var isSSHComplete: Bool {
@@ -129,7 +131,7 @@ struct ConnectionForm: View {
                 .padding(.bottom, 14)
             VStack(alignment: .leading, spacing: 14) {
                 // URLs are for servers; a file is chosen on the Connection tab.
-                if engine == .postgres { urlBar }
+                if engine != .sqlite { urlBar }
                 tabBar
                 Group {
                     switch tab {
@@ -254,18 +256,18 @@ struct ConnectionForm: View {
                         TextField("Host", text: $host, prompt: Text("localhost"))
                             // A URL pasted into Host fills the whole form instead.
                             .onChange(of: host) { _, text in
-                                if text.hasPrefix("postgres://") || text.hasPrefix("postgresql://") { url = text }
+                                if ["postgres://", "postgresql://", "mysql://", "mariadb://"].contains(where: text.hasPrefix) { url = text }
                             }
                         Text("Port").foregroundStyle(Theme.inkSecondary)
-                        TextField("Port", text: $port, prompt: Text("5432"))
+                        TextField("Port", text: $port, prompt: Text(engine == .mysql ? "3306" : "5432"))
                             .frame(width: 52)
                     }
                 }
                 FormRow("Database") {
-                    TextField("Database", text: $database, prompt: Text("postgres"))
+                    TextField("Database", text: $database, prompt: Text(engine == .mysql ? "optional: every database is shown" : "postgres"))
                 }
                 FormRow("User") {
-                    TextField("User", text: $user, prompt: Text("postgres"))
+                    TextField("User", text: $user, prompt: Text(engine == .mysql ? "root" : "postgres"))
                 }
                 FormRow("Password") {
                     HStack(spacing: 6) {
@@ -307,6 +309,13 @@ struct ConnectionForm: View {
                               hint: "With the same login, still read-only. For many databases on one server.",
                               isOn: $aiAllDatabases, indent: true)
                 }
+                if aiAccess && engine == .mysql {
+                    Label("AI tools can read every database this login can read. To limit them, use a MySQL user with rights to fewer databases.",
+                          systemImage: "info.circle")
+                        .font(Theme.meta)
+                        .foregroundStyle(Theme.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
@@ -333,8 +342,8 @@ struct ConnectionForm: View {
             }
             if isNew {
                 Picker("Database", selection: $engine) {
-                    ForEach([Engine.postgres, .sqlite], id: \.self) { engine in
-                        Text(engine.label).tag(engine)
+                    ForEach([Engine.postgres, .mysql, .sqlite], id: \.self) { engine in
+                        Text(engine == .mysql ? "MySQL / MariaDB" : engine.label).tag(engine)
                     }
                 }
                 .labelsHidden()
@@ -342,23 +351,34 @@ struct ConnectionForm: View {
                 .help("Database")
             }
         }
-        .onChange(of: engine) { _, engine in switchEngine(to: engine) }
+        .onChange(of: engine) { old, engine in switchEngine(from: old, to: engine) }
     }
 
-    /// Swaps the server defaults for an empty file, and back, keeping what the user typed.
-    private func switchEngine(to engine: Engine) {
+    /// Port, user and database a new connection starts with.
+    private static func defaults(_ engine: Engine) -> (port: String, user: String, database: String) {
+        switch engine {
+        case .postgres: ("5432", "postgres", "postgres")
+        case .mysql: ("3306", "root", "")
+        case .sqlite: ("", "", "")
+        }
+    }
+
+    /// Swaps one engine's defaults for another's, keeping what the user typed.
+    private func switchEngine(from old: Engine, to engine: Engine) {
         testTask?.cancel()
         testState = .idle
+        let before = Self.defaults(old)
+        let after = Self.defaults(engine)
         if engine == .sqlite {
             if host == "localhost" { host = "" }
-            if user == "postgres" { user = "" }
-            if database == "postgres" { database = "" }
             if tab == .ssh { tab = .connection }
-        } else {
-            if trimmed(host).isEmpty { host = "localhost" }
-            if trimmed(user).isEmpty { user = "postgres" }
-            if trimmed(database).isEmpty || database.contains("/") { database = "postgres" }
+        } else if trimmed(host).isEmpty {
+            host = "localhost"
         }
+        if port == before.port || trimmed(port).isEmpty { port = after.port }
+        if user == before.user || trimmed(user).isEmpty { user = after.user }
+        // A file's path is no server database, and back.
+        if database == before.database || database.contains("/") || old == .sqlite { database = after.database }
     }
 
     /// "PostgreSQL · user@host:port/database", or "SQLite · file", as the form stands.
@@ -368,6 +388,10 @@ struct ConnectionForm: View {
             return "SQLite · \(file)"
         }
         let host = trimmed(self.host).isEmpty ? "host" : trimmed(self.host)
+        if engine == .mysql {
+            let database = trimmed(self.database).isEmpty ? "" : "/\(trimmed(self.database))"
+            return "MySQL · \(trimmed(user))@\(host):\(port)\(database)"
+        }
         let database = trimmed(self.database).isEmpty ? "database" : trimmed(self.database)
         return "PostgreSQL · \(trimmed(user))@\(host):\(port)/\(database)"
     }
@@ -376,7 +400,7 @@ struct ConnectionForm: View {
         HStack(spacing: 8) {
             Image(systemName: "link")
                 .foregroundStyle(Theme.inkSecondary)
-            TextField("URL", text: $url, prompt: Text("Paste a postgres:// URL to fill the form"))
+            TextField("URL", text: $url, prompt: Text("Paste a \(engine == .mysql ? "mysql" : "postgres"):// URL to fill the form"))
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: url) { _, text in fill(from: text) }
         }
@@ -517,7 +541,10 @@ struct ConnectionForm: View {
             .font(Theme.caption)
         case .succeeded(let version):
             // Short, to fit beside Test: "Connected · 17.7" or "Opened · SQLite 3.50"; the full version on hover.
-            Label(engine == .sqlite ? "Opened · \(version)" : "Connected · \(version.split(separator: " ").first.map(String.init) ?? version)",
+            Label(engine == .sqlite ? "Opened · \(version)"
+                  // "MySQL 8.4.13" → "8.4.13"; the server's name is in the header.
+                  : engine == .mysql ? "Connected · \(version.split(separator: " ").last.map(String.init) ?? version)"
+                  : "Connected · \(version.split(separator: " ").first.map(String.init) ?? version)",
                   systemImage: "checkmark.circle.fill")
                 .help("PostgreSQL \(version)")
                 .font(Theme.caption)
@@ -548,6 +575,8 @@ struct ConnectionForm: View {
         }
         do {
             let parsed = try parseConnectionUrl(url: text)
+            // The URL's scheme picks the engine; its defaults then give way to the URL's parts.
+            if isNew && parsed.engine != engine { engine = parsed.engine }
             if let value = parsed.host { host = value }
             if let value = parsed.port { port = String(value) }
             if let value = parsed.database { database = value }
@@ -604,7 +633,7 @@ struct ConnectionForm: View {
         return ConnectionSettings(
             host: trimmed(host), port: UInt16(port), database: trimmed(database), user: trimmed(user),
             password: password.isEmpty ? nil : password, tls: tls, ssh: ssh, readOnly: readOnly,
-            engine: .postgres
+            engine: engine
         )
     }
 
@@ -641,6 +670,7 @@ struct ConnectionForm: View {
             name: trimmed(name), host: trimmed(host), port: port,
             database: trimmed(database), user: trimmed(user), tag: tag, tls: tls
         )
+        connection.engine = engine
         connection.readOnly = readOnly
         connection.aiAccess = aiAccess
         connection.aiAllDatabases = aiAccess && aiAllDatabases

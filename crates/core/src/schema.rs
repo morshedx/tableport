@@ -65,8 +65,10 @@ impl DatabaseSession {
     /// The databases the user can connect to, sorted by name.
     pub async fn databases(&self) -> Result<Vec<String>, DatabaseError> {
         // A SQLite connection is one file.
-        if self.dialect() == Dialect::Sqlite {
-            return Ok(vec![self.settings().database]);
+        match self.dialect() {
+            Dialect::Sqlite => return Ok(vec![self.settings().database]),
+            Dialect::Mysql => return Ok(self.mysql_schemas().await?.into_iter().map(|schema| schema.name).collect()),
+            Dialect::Postgres => {}
         }
         let rows = self
             .text_rows(

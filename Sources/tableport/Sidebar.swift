@@ -792,9 +792,9 @@ enum SidebarActions {
         DangerConfirm.run(
             title: "Delete every row of \(relation.name)?",
             typeToConfirm: workspace.isProduction ? relation.name : nil,
-            // SQLite has neither: its DELETE has no such options.
-            options: workspace.session.engine() == .sqlite ? []
-                : ["Restart identity (reset sequences)", "Cascade (also tables that reference it)"],
+            // Only PostgreSQL has these: SQLite deletes, and MySQL's TRUNCATE always restarts AUTO_INCREMENT.
+            options: workspace.session.engine() == .postgres
+                ? ["Restart identity (reset sequences)", "Cascade (also tables that reference it)"] : [],
             button: "Truncate",
             sql: { options in
                 truncateSql(relation: relation, restartIdentity: options.first ?? false, cascade: options.dropFirst().first ?? false,
@@ -807,7 +807,7 @@ enum SidebarActions {
         DangerConfirm.run(
             title: "Drop \(relation.name)?",
             typeToConfirm: workspace.isProduction ? relation.name : nil,
-            options: workspace.session.engine() == .sqlite ? [] : ["Cascade (also objects that depend on it)"],
+            options: workspace.session.engine() == .postgres ? ["Cascade (also objects that depend on it)"] : [],
             button: "Drop",
             sql: { options in dropRelationSql(relation: relation, cascade: options.first ?? false, engine: workspace.session.engine()) }
         ) { sql, _ in workspace.runChange(sql, dropping: relation) }

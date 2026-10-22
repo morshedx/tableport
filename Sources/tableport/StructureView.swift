@@ -95,7 +95,7 @@ struct StructureView: View {
                 TableColumn("default") { cell($0.defaultValue) }
                 TableColumn("comment") { cell($0.comment) }
                     // SQLite has no column comments.
-                    .defaultVisibility(model.session.engine() == .postgres ? .visible : .hidden)
+                    .defaultVisibility(model.session.engine() == .sqlite ? .hidden : .visible)
             }
             .contextMenu(forSelectionType: ColumnDetail.ID.self) { names in
                 if let column = columns.first(where: { names.contains($0.name) }) {
@@ -204,8 +204,9 @@ struct StructureView: View {
     private func confirmDrop(_ title: String, option: String, change: @escaping (Bool) -> StructureChange) {
         let relation = model.relation
         let engine = model.session.engine()
-        if engine == .sqlite {
-            // Dropping a constraint rebuilds the table; its SQL is read from the file first.
+        if engine != .postgres {
+            // SQLite rebuilds the table and MySQL drops each kind of constraint
+            // its own way: the SQL is read from the database first.
             let session = model.session
             Task {
                 let statements: [String]
@@ -238,7 +239,7 @@ struct StructureView: View {
             title: title,
             typeToConfirm: model.isProduction ? relation.name : nil,
             // SQLite drops have no CASCADE.
-            options: engine == .sqlite ? [] : [option],
+            options: engine == .postgres ? [option] : [],
             button: "Drop",
             sql: { options in
                 ((try? structureChangeSql(relation: relation, change: change(options.first ?? false), engine: engine)) ?? [])
@@ -407,7 +408,11 @@ private struct ColumnSheet: View {
 
     /// Identity and generated columns show how they get their value in place
     /// of a default; that can't be edited here.
-    private var isGenerated: Bool { original?.defaultValue?.hasPrefix("GENERATED ") ?? false }
+    /// Identity, generated and AUTO_INCREMENT columns: their value isn't a default.
+    private var isGenerated: Bool {
+        guard let value = original?.defaultValue else { return false }
+        return value.hasPrefix("GENERATED ") || value == "AUTO_INCREMENT"
+    }
 
     private var spec: ColumnSpec {
         ColumnSpec(name: name, columnType: columnType, nullable: nullable,
@@ -431,13 +436,14 @@ private struct ColumnSheet: View {
                 TextField("Name", text: $name)
                 HStack(spacing: 4) {
                     TextField("Type", text: $columnType)
-                    TypeMenu(columnType: $columnType)
+                    TypeMenu(columnType: $columnType, engine: model.session.engine())
                 }
                 Toggle("Allow NULL", isOn: $nullable)
                 TextField("Default", text: $defaultValue, prompt: Text(isGenerated ? "" : "none, or an expression such as now()"))
                     .disabled(isGenerated)
                     .help(isGenerated ? "Identity and generated columns are changed in SQL" : "")
-                if model.session.engine() == .postgres {
+                // SQLite has no column comments.
+                if model.session.engine() != .sqlite {
                     TextField("Comment", text: $comment, prompt: Text("none"))
                 }
             }
@@ -457,19 +463,28 @@ private struct ColumnSheet: View {
     }
 }
 
-/// Types offered next to a type field; any other type can be typed.
-private let commonColumnTypes = [
-    "integer", "bigint", "smallint", "serial", "bigserial", "numeric(12,2)", "real", "double precision", "text",
-    "varchar(255)", "boolean", "date", "timestamp", "timestamptz", "time", "uuid", "jsonb", "json", "bytea", "inet", "text[]",
-]
+/// Types offered next to a type field, by engine; any other type can be typed.
+private func commonColumnTypes(_ engine: Engine) -> [String] {
+    switch engine {
+    case .postgres:
+        ["integer", "bigint", "smallint", "serial", "bigserial", "numeric(12,2)", "real", "double precision", "text",
+         "varchar(255)", "boolean", "date", "timestamp", "timestamptz", "time", "uuid", "jsonb", "json", "bytea", "inet", "text[]"]
+    case .mysql:
+        ["int", "bigint", "smallint", "tinyint(1)", "decimal(12,2)", "double", "varchar(255)", "text", "longtext",
+         "date", "datetime", "timestamp", "time", "json", "blob", "enum('a','b')", "char(36)"]
+    case .sqlite:
+        ["INTEGER", "REAL", "TEXT", "BLOB", "NUMERIC"]
+    }
+}
 
 /// The ▾ next to a type field: pick a common type.
 private struct TypeMenu: View {
     @Binding var columnType: String
+    let engine: Engine
 
     var body: some View {
         Menu {
-            ForEach(commonColumnTypes, id: \.self) { type in Button(type) { columnType = type } }
+            ForEach(commonColumnTypes(engine), id: \.self) { type in Button(type) { columnType = type } }
         } label: {
             Image(systemName: "chevron.down")
         }
@@ -506,12 +521,20 @@ struct NewTableSheet: View {
     init(workspace: WorkspaceModel) {
         self.workspace = workspace
         _schema = State(initialValue: workspace.sidebar.schema)
-        // SQLite's INTEGER PRIMARY KEY numbers new rows itself.
-        if workspace.session.engine() == .sqlite {
+        switch workspace.session.engine() {
+        case .sqlite:
+            // SQLite's INTEGER PRIMARY KEY numbers new rows itself.
             _rows = State(initialValue: [
                 Row(name: "id", columnType: "INTEGER", primaryKey: true, nullable: false),
                 Row(name: "", columnType: "TEXT", primaryKey: false, nullable: true),
             ])
+        case .mysql:
+            _rows = State(initialValue: [
+                Row(name: "id", columnType: "bigint", primaryKey: true, nullable: false, defaultValue: "AUTO_INCREMENT"),
+                Row(name: "", columnType: "varchar(255)", primaryKey: false, nullable: true),
+            ])
+        case .postgres:
+            break
         }
     }
 
@@ -594,7 +617,7 @@ struct NewTableSheet: View {
                             TextField("name", text: $row.name).frame(width: 170)
                             HStack(spacing: 2) {
                                 TextField("type", text: $row.columnType)
-                                TypeMenu(columnType: $row.columnType)
+                                TypeMenu(columnType: $row.columnType, engine: workspace.session.engine())
                             }
                             .frame(width: 190)
                             Toggle("", isOn: $row.primaryKey).labelsHidden().frame(width: 34)

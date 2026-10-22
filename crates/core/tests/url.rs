@@ -1,4 +1,4 @@
-use tableport_core::{parse_connection_url, ParsedUrl, TlsMode};
+use tableport_core::{parse_connection_url, Engine, ParsedUrl, TlsMode};
 
 fn some(text: &str) -> Option<String> {
     Some(text.to_string())
@@ -16,8 +16,21 @@ fn full_url() {
             user: some("app"),
             password: some("p@ss:word"),
             tls: Some(TlsMode::Require),
+            engine: Engine::Postgres,
         }
     );
+}
+
+#[test]
+fn mysql_and_mariadb_urls() {
+    let parsed = parse_connection_url("mysql://root:secret@db.example.com/shop?ssl-mode=REQUIRED").unwrap();
+    assert_eq!(parsed.engine, Engine::Mysql);
+    assert_eq!(parsed.port, Some(3306), "MySQL's default port");
+    assert_eq!(parsed.database, some("shop"));
+    assert_eq!(parsed.tls, Some(TlsMode::Require));
+    let parsed = parse_connection_url("mariadb://app@127.0.0.1:3308?ssl-mode=VERIFY_IDENTITY").unwrap();
+    assert_eq!((parsed.engine, parsed.port, parsed.database), (Engine::Mysql, Some(3308), None));
+    assert_eq!(parsed.tls, Some(TlsMode::VerifyFull));
 }
 
 #[test]
@@ -53,7 +66,7 @@ fn supabase_pooler_url() {
 
 #[test]
 fn other_text_is_refused() {
-    let error = parse_connection_url("mysql://root@localhost/db").unwrap_err();
+    let error = parse_connection_url("mongodb://root@localhost/db").unwrap_err();
     assert!(error.message().contains("postgres://"), "{error}");
     let error = parse_connection_url("postgres://u@h:notaport/d").unwrap_err();
     assert!(error.message().contains("can't be read"), "{error}");

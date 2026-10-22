@@ -664,6 +664,14 @@ private struct HeaderBar: View {
                     Text((model.connection.database as NSString).lastPathComponent)
                 }
                 .help(model.connection.database)
+            } else if model.connection.engine == .mysql {
+                // The sidebar lists every database of the server; the chip names the server.
+                HeaderChip {
+                    headerLucide("database")
+                } label: {
+                    Text(model.connection.host)
+                }
+                .help("\(model.connection.host):\(model.connection.port)")
             } else {
             Menu {
                 ForEach(model.databases, id: \.self) { name in

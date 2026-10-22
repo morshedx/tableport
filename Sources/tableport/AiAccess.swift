@@ -51,8 +51,10 @@ final class AiAccess: McpHost, @unchecked Sendable {
 
     func connections() -> [McpConnection] {
         allowed.withLock { $0 }.map {
+            // A MySQL login reads every database it has rights to; no setting
+            // could keep an AI tool to one.
             McpConnection(id: $0.id.uuidString, name: $0.name, database: $0.database,
-                          allDatabases: $0.aiAllDatabases, tag: $0.tag?.rawValue)
+                          allDatabases: $0.aiAllDatabases || $0.engine == .mysql, tag: $0.tag?.rawValue)
         }
     }
 

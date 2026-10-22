@@ -3255,16 +3255,24 @@ public struct ParsedUrl: Equatable, Hashable {
     public var user: String?
     public var password: String?
     public var tls: TlsMode?
+    /**
+     * PostgreSQL for postgres://, MySQL for mysql:// and mariadb://.
+     */
+    public var engine: Engine
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(host: String?, port: UInt16?, database: String?, user: String?, password: String?, tls: TlsMode?) {
+    public init(host: String?, port: UInt16?, database: String?, user: String?, password: String?, tls: TlsMode?, 
+        /**
+         * PostgreSQL for postgres://, MySQL for mysql:// and mariadb://.
+         */engine: Engine) {
         self.host = host
         self.port = port
         self.database = database
         self.user = user
         self.password = password
         self.tls = tls
+        self.engine = engine
     }
 
     
@@ -3288,7 +3296,8 @@ public struct FfiConverterTypeParsedUrl: FfiConverterRustBuffer {
                 database: FfiConverterOptionString.read(from: &buf), 
                 user: FfiConverterOptionString.read(from: &buf), 
                 password: FfiConverterOptionString.read(from: &buf), 
-                tls: FfiConverterOptionTypeTlsMode.read(from: &buf)
+                tls: FfiConverterOptionTypeTlsMode.read(from: &buf), 
+                engine: FfiConverterTypeEngine.read(from: &buf)
         )
     }
 
@@ -3299,6 +3308,7 @@ public struct FfiConverterTypeParsedUrl: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.user, into: &buf)
         FfiConverterOptionString.write(value.password, into: &buf)
         FfiConverterOptionTypeTlsMode.write(value.tls, into: &buf)
+        FfiConverterTypeEngine.write(value.engine, into: &buf)
     }
 }
 
@@ -6931,7 +6941,8 @@ public func structureChangeSql(relation: Relation, change: StructureChange, engi
 }
 /**
  * Reads `postgres://user:password@host:port/database?sslmode=…`, also with
- * `postgresql://` and percent-encoded parts, as libpq does.
+ * `postgresql://` and percent-encoded parts, as libpq does; and
+ * `mysql://` or `mariadb://` URLs with `ssl-mode`.
  *
  * Read by hand rather than with tokio-postgres' parser, which refuses the
  * whole URL for any parameter it doesn't know. Real URLs carry many: Prisma
@@ -7022,7 +7033,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tableport_core_checksum_func_structure_change_sql() != 62335) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tableport_core_checksum_func_parse_connection_url() != 3082) {
+    if (uniffi_tableport_core_checksum_func_parse_connection_url() != 58734) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_method_completer_complete() != 57341) {

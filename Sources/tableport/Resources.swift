@@ -82,18 +82,21 @@ struct EngineLogo: View {
         case .sqlite:
             logo(Self.sqlite, label: "SQLite", letters: "Sl", color: Color(red: 0.06, green: 0.45, blue: 0.75))
         case .mysql:
-            logo(Self.mysql, label: "MySQL", letters: "My", color: Color(red: 0.27, green: 0.47, blue: 0.63))
+            // One colour, so it can lighten in dark mode, where MySQL's blue is too dark to see.
+            logo(Self.mysql, label: "MySQL", letters: "My", color: Self.mysqlBlue, tint: true)
         }
     }
 
     /// The engine's own logo, or its letters on a tile if the file is missing.
     @ViewBuilder
-    private func logo(_ image: NSImage?, label: String, letters: String, color: Color) -> some View {
+    private func logo(_ image: NSImage?, label: String, letters: String, color: Color, tint: Bool = false) -> some View {
         if let image {
             Image(nsImage: image)
                 .resizable()
+                .renderingMode(tint ? .template : .original)
                 .interpolation(.high)
                 .aspectRatio(contentMode: .fit)
+                .foregroundStyle(color)
                 .frame(width: size, height: size)
                 .accessibilityLabel(label)
         } else {
@@ -112,6 +115,11 @@ struct EngineLogo: View {
 
     private static let sqlite = image("sqlite")
     private static let mysql = image("mysql")
+    private static let mysqlBlue = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(red: 0.47, green: 0.66, blue: 0.84, alpha: 1)
+            : NSColor(red: 0.27, green: 0.47, blue: 0.63, alpha: 1)
+    })
 }
 
 struct PostgresLogo: View {

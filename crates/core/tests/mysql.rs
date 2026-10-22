@@ -59,8 +59,12 @@ where
         for statement in SHOP {
             session.execute(statement.to_string()).await.unwrap_or_else(|error| panic!("{statement}: {error}"));
         }
-        body(session, database.clone()).await;
+        // The database is dropped whether `body` passed or not.
+        let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body(session, database.clone()))).await;
         admin.execute(format!("DROP DATABASE \"{database}\"")).await.unwrap();
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
     }
 }
 
