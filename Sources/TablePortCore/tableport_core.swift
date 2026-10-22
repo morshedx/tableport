@@ -858,6 +858,8 @@ public protocol DatabaseSessionProtocol: AnyObject, Sendable {
     
     func close() 
     
+    func engine()  -> Engine
+    
     /**
      * Runs SQL and discards any rows. Several statements separated by `;`
      * run as one implicit transaction.
@@ -1317,6 +1319,15 @@ open func close()  {try! rustCall() {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
+}
+    
+open func engine() -> Engine  {
+    return try!  FfiConverterTypeEngine_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_method_databasesession_engine(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
     
     /**
@@ -2565,6 +2576,7 @@ public struct ConnectionSettings: Equatable, Hashable {
      * hidden in functions: it starts with default_transaction_read_only on.
      */
     public var readOnly: Bool
+    public var engine: Engine
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2576,7 +2588,7 @@ public struct ConnectionSettings: Equatable, Hashable {
         /**
          * The server refuses every write in this session, including writes
          * hidden in functions: it starts with default_transaction_read_only on.
-         */readOnly: Bool) {
+         */readOnly: Bool, engine: Engine) {
         self.host = host
         self.port = port
         self.database = database
@@ -2585,6 +2597,7 @@ public struct ConnectionSettings: Equatable, Hashable {
         self.tls = tls
         self.ssh = ssh
         self.readOnly = readOnly
+        self.engine = engine
     }
 
     
@@ -2610,7 +2623,8 @@ public struct FfiConverterTypeConnectionSettings: FfiConverterRustBuffer {
                 password: FfiConverterOptionString.read(from: &buf), 
                 tls: FfiConverterTypeTlsMode.read(from: &buf), 
                 ssh: FfiConverterOptionTypeSshSettings.read(from: &buf), 
-                readOnly: FfiConverterBool.read(from: &buf)
+                readOnly: FfiConverterBool.read(from: &buf), 
+                engine: FfiConverterTypeEngine.read(from: &buf)
         )
     }
 
@@ -2623,6 +2637,7 @@ public struct FfiConverterTypeConnectionSettings: FfiConverterRustBuffer {
         FfiConverterTypeTlsMode.write(value.tls, into: &buf)
         FfiConverterOptionTypeSshSettings.write(value.ssh, into: &buf)
         FfiConverterBool.write(value.readOnly, into: &buf)
+        FfiConverterTypeEngine.write(value.engine, into: &buf)
     }
 }
 
@@ -4706,6 +4721,79 @@ public func FfiConverterTypeDatabaseError_lift(_ buf: RustBuffer) throws -> Data
 public func FfiConverterTypeDatabaseError_lower(_ value: DatabaseError) -> RustBuffer {
     return FfiConverterTypeDatabaseError.lower(value)
 }
+
+
+/**
+ * Which database engine a connection talks to.
+ */
+
+public enum Engine: Equatable, Hashable {
+    
+    case postgres
+    /**
+     * A database file on this Mac: `database` is its path; the server
+     * fields, TLS and SSH are not used.
+     */
+    case sqlite
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension Engine: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
+    typealias SwiftType = Engine
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Engine {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .postgres
+        
+        case 2: return .sqlite
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: Engine, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .postgres:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .sqlite:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEngine_lift(_ buf: RustBuffer) throws -> Engine {
+    return try FfiConverterTypeEngine.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEngine_lower(_ value: Engine) -> RustBuffer {
+    return FfiConverterTypeEngine.lower(value)
+}
+
 
 
 
@@ -6956,6 +7044,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_method_databasesession_close() != 58387) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_method_databasesession_engine() != 29615) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_method_databasesession_execute() != 1063) {

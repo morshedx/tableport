@@ -21,6 +21,15 @@ pub enum TlsMode {
     VerifyFull,
 }
 
+/// Which database engine a connection talks to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum Engine {
+    Postgres,
+    /// A database file on this Mac: `database` is its path; the server
+    /// fields, TLS and SSH are not used.
+    Sqlite,
+}
+
 /// Everything needed to open one connection.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Record)]
 pub struct ConnectionSettings {
@@ -36,11 +45,18 @@ pub struct ConnectionSettings {
     /// The server refuses every write in this session, including writes
     /// hidden in functions: it starts with default_transaction_read_only on.
     pub read_only: bool,
+    pub engine: Engine,
 }
 
 impl ConnectionSettings {
+    /// Where the connection goes, for messages: "host:port", or the file name.
     pub(crate) fn endpoint(&self) -> String {
-        format!("{}:{}", self.host, self.port)
+        match self.engine {
+            Engine::Postgres => format!("{}:{}", self.host, self.port),
+            Engine::Sqlite => std::path::Path::new(&self.database)
+                .file_name()
+                .map_or_else(|| self.database.clone(), |name| name.to_string_lossy().into_owned()),
+        }
     }
 }
 
@@ -53,7 +69,12 @@ pub struct DatabaseSession {
 }
 
 /// One live connection: what Reconnect replaces.
-struct Link {
+enum Link {
+    Postgres(PgLink),
+    Sqlite(crate::sqlite::SqliteLink),
+}
+
+struct PgLink {
     client: Arc<Client>,
     server_version: String,
     /// Drives the socket; aborting it closes the connection.
@@ -64,7 +85,7 @@ struct Link {
     _tunnel: Option<Tunnel>,
 }
 
-impl Drop for Link {
+impl Drop for PgLink {
     fn drop(&mut self) {
         self.connection_task.abort();
     }
@@ -80,7 +101,14 @@ impl DatabaseSession {
 
     /// For example "17.7 (Homebrew)".
     pub fn server_version(&self) -> String {
-        self.read_link().server_version.clone()
+        match &*self.read_link() {
+            Link::Postgres(link) => link.server_version.clone(),
+            Link::Sqlite(link) => link.version.clone(),
+        }
+    }
+
+    pub fn engine(&self) -> Engine {
+        self.settings.engine
     }
 
     /// Opens a new connection with the same settings (SSH tunnel included)
@@ -97,7 +125,10 @@ impl DatabaseSession {
     /// A round trip to the server, failing after 5 seconds: tells whether
     /// the connection still works, for example after the Mac slept.
     pub async fn ping(&self) -> Result<(), DatabaseError> {
-        let client = self.client();
+        if self.settings.engine == Engine::Sqlite {
+            return self.execute("SELECT 1".into()).await;
+        }
+        let client = self.client()?;
         let endpoint = self.settings.endpoint();
         on_runtime(async move {
             match tokio::time::timeout(Duration::from_secs(5), client.simple_query("SELECT 1")).await {
@@ -115,17 +146,26 @@ impl DatabaseSession {
     /// True once the connection has ended: the server closed it, or the
     /// network keepalives found it dead.
     pub fn is_closed(&self) -> bool {
-        self.client().is_closed()
+        match &*self.read_link() {
+            Link::Postgres(link) => link.client.is_closed(),
+            Link::Sqlite(link) => link.is_closed(),
+        }
     }
 
     pub fn close(&self) {
-        self.read_link().connection_task.abort();
+        match &*self.read_link() {
+            Link::Postgres(link) => link.connection_task.abort(),
+            Link::Sqlite(link) => link.close(),
+        }
     }
 
     /// Runs SQL and discards any rows. Several statements separated by `;`
     /// run as one implicit transaction.
     pub async fn execute(&self, sql: String) -> Result<(), DatabaseError> {
-        let client = self.client();
+        if let Some(link) = self.sqlite() {
+            return on_runtime(async move { link.execute(sql).await }).await;
+        }
+        let client = self.client()?;
         let endpoint = self.settings.endpoint();
         on_runtime(async move {
             client.batch_execute(&sql).await.map_err(|error| DatabaseError::from_postgres(error, &endpoint))
@@ -150,12 +190,28 @@ impl DatabaseSession {
         Ok(Self { settings, link: RwLock::new(link) })
     }
 
-    pub(crate) fn client(&self) -> Arc<Client> {
-        self.read_link().client.clone()
+    /// The PostgreSQL client; an error on another engine, for features
+    /// that only PostgreSQL has.
+    pub(crate) fn client(&self) -> Result<Arc<Client>, DatabaseError> {
+        match &*self.read_link() {
+            Link::Postgres(link) => Ok(link.client.clone()),
+            Link::Sqlite(_) => Err(DatabaseError::new("This needs a PostgreSQL connection.")),
+        }
+    }
+
+    /// The SQLite link, when the connection is to a SQLite file.
+    pub(crate) fn sqlite(&self) -> Option<crate::sqlite::SqliteLink> {
+        match &*self.read_link() {
+            Link::Sqlite(link) => Some(link.clone()),
+            Link::Postgres(_) => None,
+        }
     }
 
     pub(crate) fn tls(&self) -> Option<postgres_native_tls::MakeTlsConnector> {
-        self.read_link().tls.clone()
+        match &*self.read_link() {
+            Link::Postgres(link) => link.tls.clone(),
+            Link::Sqlite(_) => None,
+        }
     }
 
     fn read_link(&self) -> std::sync::RwLockReadGuard<'_, Link> {
@@ -170,6 +226,13 @@ fn poisoned() -> DatabaseError {
 }
 
 async fn open_link(settings: &ConnectionSettings) -> Result<Link, DatabaseError> {
+    match settings.engine {
+        Engine::Postgres => open_pg_link(settings).await.map(Link::Postgres),
+        Engine::Sqlite => crate::sqlite::SqliteLink::open(settings).await.map(Link::Sqlite),
+    }
+}
+
+async fn open_pg_link(settings: &ConnectionSettings) -> Result<PgLink, DatabaseError> {
     let endpoint = settings.endpoint();
     let mut config = tokio_postgres::Config::new();
     config
@@ -236,7 +299,7 @@ async fn open_link(settings: &ConnectionSettings) -> Result<Link, DatabaseError>
         })
         .unwrap_or_default();
 
-    Ok(Link { client: Arc::new(client), server_version, connection_task, tls, _tunnel: tunnel })
+    Ok(PgLink { client: Arc::new(client), server_version, connection_task, tls, _tunnel: tunnel })
 }
 
 impl DatabaseSession {
@@ -244,7 +307,10 @@ impl DatabaseSession {
     /// Runs one statement through the simple query protocol, so every value
     /// arrives as text (None for NULL), whatever its type.
     pub(crate) async fn text_rows(&self, sql: String) -> Result<Vec<Vec<Option<String>>>, DatabaseError> {
-        let client = self.client();
+        if let Some(link) = self.sqlite() {
+            return on_runtime(async move { link.text_rows(sql).await }).await;
+        }
+        let client = self.client()?;
         let endpoint = self.settings.endpoint();
         on_runtime(async move {
             let messages = client

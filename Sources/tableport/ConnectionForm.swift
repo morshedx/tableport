@@ -516,7 +516,8 @@ struct ConnectionForm: View {
         }
         return ConnectionSettings(
             host: trimmed(host), port: UInt16(port), database: trimmed(database), user: trimmed(user),
-            password: password.isEmpty ? nil : password, tls: tls, ssh: ssh, readOnly: readOnly
+            password: password.isEmpty ? nil : password, tls: tls, ssh: ssh, readOnly: readOnly,
+            engine: .postgres
         )
     }
 

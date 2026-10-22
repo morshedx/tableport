@@ -42,7 +42,7 @@ impl DatabaseSession {
         if sql.trim().is_empty() {
             return Err(DatabaseError::new("There is no SQL to run."));
         }
-        let client = self.client();
+        let client = self.client()?;
         let endpoint = self.settings().endpoint();
         on_runtime(async move {
             let map = |error| DatabaseError::from_postgres(error, &endpoint);
@@ -118,7 +118,11 @@ impl DatabaseSession {
     /// Asks the server to stop the statement running on this connection.
     /// The running call then fails with "canceling statement due to user request".
     pub async fn cancel_query(&self) -> Result<(), DatabaseError> {
-        let token = self.client().cancel_token();
+        if let Some(link) = self.sqlite() {
+            link.interrupt();
+            return Ok(());
+        }
+        let token = self.client()?.cancel_token();
         let tls = self.tls();
         let endpoint = self.settings().endpoint();
         on_runtime(async move {

@@ -68,7 +68,8 @@ struct SavedConnection: Codable, Identifiable, Hashable {
                     trustedFingerprint: ssh.trustedFingerprint
                 )
             },
-            readOnly: readOnly
+            readOnly: readOnly,
+            engine: .postgres
         )
     }
 }

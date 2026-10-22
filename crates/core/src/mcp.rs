@@ -427,7 +427,7 @@ async fn read_only<T>(
     session: &DatabaseSession,
     body: impl std::future::Future<Output = Result<T, tokio_postgres::Error>>,
 ) -> Result<T, DatabaseError> {
-    let client = session.client();
+    let client = session.client()?;
     let endpoint = session.settings().endpoint();
     let map = |error| DatabaseError::from_postgres(error, &endpoint);
     client
@@ -457,7 +457,7 @@ async fn read_query(session: &DatabaseSession, sql: &str, max_rows: u64) -> Resu
         statement(sql),
         max_rows + 1
     );
-    let client = session.client();
+    let client = session.client()?;
     let text: String = read_only(session, async { client.query_one(&wrapped, &[]).await.map(|row| row.get(0)) }).await?;
     let mut rows: Vec<Value> = serde_json::from_str(&text).map_err(|error| DatabaseError::new(format!("Unreadable result: {error}")))?;
     let truncated = rows.len() as u64 > max_rows;
@@ -474,7 +474,7 @@ async fn read_query(session: &DatabaseSession, sql: &str, max_rows: u64) -> Resu
 
 async fn explain_query(session: &DatabaseSession, sql: &str) -> Result<(String, String), DatabaseError> {
     let explain = format!("EXPLAIN {}", statement(sql));
-    let client = session.client();
+    let client = session.client()?;
     let rows = read_only(session, async { client.query(&explain, &[]).await }).await?;
     let plan: Vec<String> = rows.iter().filter_map(|row| row.try_get::<_, String>(0).ok()).collect();
     Ok((plan.join("\n"), format!("{} plan lines", plan.len())))

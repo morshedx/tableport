@@ -51,7 +51,7 @@ impl DatabaseSession {
         if format == ExportFormat::Sql && columns.is_empty() {
             return Err(DatabaseError::new("The table's columns are not loaded yet."));
         }
-        let client = self.client();
+        let client = self.client()?;
         let endpoint = self.settings().endpoint();
         on_runtime(async move {
             let map = |error| DatabaseError::from_postgres(error, &endpoint);

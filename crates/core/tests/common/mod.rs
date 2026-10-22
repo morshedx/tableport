@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use tableport_core::{ConnectionSettings, DatabaseSession, TlsMode};
+use tableport_core::{ConnectionSettings, DatabaseSession, Engine, TlsMode};
 
 pub fn enabled() -> bool {
     std::env::var("TABLEPORT_TEST_PG").as_deref() == Ok("1")
@@ -23,6 +23,7 @@ pub fn local(database: &str, port: u16, tls: TlsMode) -> ConnectionSettings {
         tls,
         ssh: None,
         read_only: false,
+        engine: Engine::Postgres,
     }
 }
 

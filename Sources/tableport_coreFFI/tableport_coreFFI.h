@@ -440,6 +440,11 @@ uint64_t uniffi_tableport_core_fn_method_databasesession_schemas(uint64_t ptr
 void uniffi_tableport_core_fn_method_databasesession_close(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_DATABASESESSION_ENGINE
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_DATABASESESSION_ENGINE
+RustBuffer uniffi_tableport_core_fn_method_databasesession_engine(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_DATABASESESSION_EXECUTE
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_DATABASESESSION_EXECUTE
 uint64_t uniffi_tableport_core_fn_method_databasesession_execute(uint64_t ptr, RustBuffer sql
@@ -1167,6 +1172,12 @@ uint16_t uniffi_tableport_core_checksum_method_databasesession_schemas(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_DATABASESESSION_CLOSE
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_DATABASESESSION_CLOSE
 uint16_t uniffi_tableport_core_checksum_method_databasesession_close(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_DATABASESESSION_ENGINE
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_DATABASESESSION_ENGINE
+uint16_t uniffi_tableport_core_checksum_method_databasesession_engine(void
     
 );
 #endif

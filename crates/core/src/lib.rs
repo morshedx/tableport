@@ -15,6 +15,7 @@ mod rows;
 mod schema;
 mod session;
 mod sql_text;
+mod sqlite;
 mod ssh;
 mod store;
 mod structure;
@@ -39,7 +40,7 @@ pub use structure::{
 pub use sql_text::{format_json, format_sql, statement_range, TextRange};
 pub use ssh::SshSettings;
 pub use store::{HistoryEntry, LocalStore, SavedQuery};
-pub use session::{test_connection, ConnectionSettings, DatabaseSession, TlsMode};
+pub use session::{test_connection, ConnectionSettings, DatabaseSession, Engine, TlsMode};
 
 uniffi::setup_scaffolding!();
 
