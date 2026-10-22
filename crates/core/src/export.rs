@@ -47,6 +47,9 @@ impl DatabaseSession {
         format: ExportFormat,
         path: String,
     ) -> Result<u64, DatabaseError> {
+        if self.engine() == crate::Engine::Mongo {
+            return self.mongo_export(relation, columns, filters, sort, scope, format, path).await;
+        }
         let select = select_sql(&relation, &columns, &filters, sort.as_ref(), &primary_key, &scope, self.dialect())?;
         if format == ExportFormat::Sql && columns.is_empty() {
             return Err(DatabaseError::new("The table's columns are not loaded yet."));

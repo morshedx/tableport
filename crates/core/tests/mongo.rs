@@ -154,3 +154,129 @@ async fn client(server: &str) -> mongodb::Client {
 async fn drop_database(server: &str, database: &str) {
     client(server).await.database(database).drop().await.unwrap();
 }
+
+/// One allowed MongoDB connection, for the AI access attack test.
+struct Host {
+    settings: ConnectionSettings,
+}
+
+impl tableport_core::McpHost for Host {
+    fn connections(&self) -> Vec<tableport_core::McpConnection> {
+        vec![tableport_core::McpConnection {
+            id: "mongo".into(),
+            name: "Mongo".into(),
+            database: self.settings.database.clone(),
+            all_databases: true,
+            tag: None,
+            engine: Engine::Mongo,
+        }]
+    }
+
+    fn settings(&self, _connection_id: String) -> Option<ConnectionSettings> {
+        Some(self.settings.clone())
+    }
+
+    fn record(&self, _entry: tableport_core::McpLogEntry) {}
+}
+
+#[tokio::test]
+async fn runs_shell_commands_exports_and_only_reads_for_ai() {
+    let Ok(server) = std::env::var("TABLEPORT_TEST_MONGO") else { return };
+    let database = format!("tableport_shell_{}", std::process::id());
+    let session = DatabaseSession::connect(settings(&server, &database)).await.expect("connect");
+    let result = async {
+        // Writes in the editor.
+        let run = |text: &str| {
+            let session = session.clone();
+            let text = text.to_string();
+            async move { session.run_query(text, 100).await }
+        };
+        let inserted = run("db.orders.insertMany([{ _id: 1, who: 'ada', total: 30, items: ['pen'] }, { _id: 2, who: 'grace', total: 70 }, { _id: 3, who: 'ada', total: 5.5 }])").await.unwrap();
+        assert_eq!(inserted.statement_counts, [3]);
+        let updated = run("db.orders.updateOne({ _id: 3 }, { $set: { total: 6 } }); db.orders.deleteOne({ _id: 99 })").await.unwrap();
+        assert_eq!(updated.statement_counts, [1, 0]);
+        assert_eq!(updated.statement_verbs, ["updateOne", "deleteOne"]);
+
+        // Reads: find with modifiers, aggregate, count, distinct, show.
+        let found = run("db.orders.find({ total: { $gt: 5 } }, { who: 1, total: 1 }).sort({ total: -1 }).limit(2)").await.unwrap();
+        let set = &found.result_sets[0];
+        assert_eq!(set.columns, ["_id", "who", "total"]);
+        assert_eq!(set.rows.len(), 2);
+        assert_eq!(set.rows[0][2].as_deref(), Some("70"));
+        assert_eq!(set.numeric_columns, [true, false, true]);
+        let paged = session.run_query("db.orders.find()".into(), 2).await.unwrap();
+        assert_eq!((paged.result_sets[0].rows.len(), paged.result_sets[0].total_rows), (2, 3), "the footer counts every match");
+        let grouped = run("db.orders.aggregate([{ $group: { _id: '$who', sum: { $sum: '$total' } } }, { $sort: { _id: 1 } }])").await.unwrap();
+        assert_eq!(grouped.result_sets[0].rows, [[Some("ada".to_string()), Some("36".to_string())], [Some("grace".to_string()), Some("70".to_string())]]);
+        let count = run("db.getCollection('orders').countDocuments({ who: 'ada' })").await.unwrap();
+        assert_eq!(count.result_sets[0].rows[0][0].as_deref(), Some("2"));
+        let distinct = run("db['orders'].distinct('who')").await.unwrap();
+        assert_eq!(distinct.result_sets[0].rows.len(), 2);
+        let collections = run("show collections").await.unwrap();
+        assert_eq!(collections.result_sets[0].rows, [[Some("orders".to_string())]]);
+        assert!(run("db.orders.explode()").await.unwrap_err().message().contains("explode"));
+        assert!(run("SELECT * FROM orders").await.is_err());
+
+        // Export: whole documents in relaxed extended JSON, and CSV.
+        let orders = Relation { schema: database.clone(), name: "orders".into(), kind: RelationKind::Table };
+        let columns = session.columns(orders.clone()).await.unwrap();
+        let path = std::env::temp_dir().join(format!("tableport-mongo-{}.json", std::process::id()));
+        let written = session
+            .export_rows(orders.clone(), columns.clone(), Vec::new(), None, vec!["_id".into()], tableport_core::ExportScope::All,
+                tableport_core::ExportFormat::Json, path.to_string_lossy().into())
+            .await
+            .unwrap();
+        assert_eq!(written, 3);
+        let exported: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(exported[0], serde_json::json!({ "_id": 1, "who": "ada", "total": 30, "items": ["pen"] }));
+        std::fs::remove_file(&path).ok();
+
+        // A read-only connection runs reads and refuses writes.
+        let read_only = DatabaseSession::connect(ConnectionSettings { read_only: true, ..settings(&server, &database) }).await.unwrap();
+        assert!(read_only.run_query("db.orders.find()".into(), 10).await.is_ok());
+        assert!(read_only.run_query("db.orders.deleteMany({})".into(), 10).await.is_err());
+
+        // AI access: reads work; writes, $out, $merge and commands don't.
+        let socket = std::env::temp_dir().join(format!("tableport-mcp-mongo-{}.sock", std::process::id()));
+        let mcp = tableport_core::start_mcp_server(socket.to_string_lossy().into(), "test".into(), std::sync::Arc::new(Host { settings: settings(&server, &database) })).unwrap();
+        let (reader, mut writer) = tokio::net::UnixStream::connect(&socket).await.unwrap().into_split();
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let mut lines = tokio::io::BufReader::new(reader).lines();
+        macro_rules! call {
+            ($tool:expr, $arguments:expr) => {{
+                let message = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": $tool, "arguments": $arguments } });
+                writer.write_all(format!("{message}\n").as_bytes()).await.unwrap();
+                let reply: serde_json::Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                (reply["result"]["content"][0]["text"].as_str().unwrap_or_default().to_string(), reply["result"]["isError"].as_bool().unwrap_or(true))
+            }};
+        }
+        let (text, error) = call!("run_read_query", serde_json::json!({ "sql": "db.orders.find({ who: 'ada' })" }));
+        assert!(!error && text.contains("\"count\": 2"), "{text}");
+        let (text, error) = call!("describe_table", serde_json::json!({ "schema": database, "table": "orders" }));
+        assert!(!error && text.contains("who"), "{text}");
+        for sql in [
+            "db.orders.deleteMany({})",
+            "db.orders.insertOne({ x: 1 })",
+            "db.orders.updateMany({}, { $set: { total: 0 } })",
+            "db.orders.drop()",
+            "db.runCommand({ drop: 'orders' })",
+            "db.orders.aggregate([{ $match: {} }, { $out: 'copy' }])",
+            "db.orders.aggregate([{ $merge: { into: 'orders' } }])",
+            "db.orders.find(); db.orders.deleteMany({})",
+            "db.dropDatabase()",
+        ] {
+            let (text, error) = call!("run_read_query", serde_json::json!({ "sql": sql }));
+            assert!(error, "not refused: {sql} → {text}");
+        }
+        mcp.stop();
+        let after = run("db.orders.find().sort({ _id: 1 })").await.unwrap();
+        assert_eq!(after.result_sets[0].rows.len(), 3);
+        let names = run("show collections").await.unwrap();
+        assert_eq!(names.result_sets[0].rows.len(), 1, "no copy was written");
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(result)).await;
+    drop_database(&server, &database).await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}

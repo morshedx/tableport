@@ -48,6 +48,9 @@ impl DatabaseSession {
         if let Some(link) = self.mysql() {
             return on_runtime(async move { link.run_query(sql, max_rows).await }).await;
         }
+        if self.engine() == crate::Engine::Mongo {
+            return self.mongo_run(sql, max_rows).await;
+        }
         let client = self.client()?;
         let endpoint = self.settings().endpoint();
         on_runtime(async move {

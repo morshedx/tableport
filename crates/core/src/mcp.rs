@@ -462,7 +462,9 @@ fn tool_definitions() -> Value {
             "name": "run_read_query",
             "description": "Runs one read-only query (SELECT, WITH … SELECT, VALUES, TABLE) in the connection's SQL dialect and returns its rows as JSON. \
                 Changes to data are refused. At most max_rows rows (default 100, up to 1000); 30 s time limit. \
-                On Redis: one read command (GET, HGETALL, LRANGE, SCAN, ZRANGE…) as sql; writes, scripts and KEYS are refused.",
+                On Redis: one read command (GET, HGETALL, LRANGE, SCAN, ZRANGE…) as sql; writes, scripts and KEYS are refused. \
+                On MongoDB: one call in mongo shell syntax as sql, such as db.people.find({ age: { $gt: 30 } }).limit(10) or \
+                db.orders.aggregate([…]); writes, $out and $merge are refused.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -512,6 +514,14 @@ async fn read_only<T>(
 }
 
 async fn read_query(session: &DatabaseSession, sql: &str, max_rows: u64) -> Result<(String, String), DatabaseError> {
+    if session.engine() == crate::Engine::Mongo {
+        let mut rows = session.mongo_read(sql.to_string(), max_rows + 1).await?;
+        let truncated = rows.len() as u64 > max_rows;
+        rows.truncate(max_rows as usize);
+        let summary = format!("{}{} documents", rows.len(), if truncated { "+" } else { "" });
+        let body = json!({ "documents": rows, "count": rows.len(), "truncated": truncated });
+        return Ok((serde_json::to_string_pretty(&body).unwrap_or_default(), summary));
+    }
     // A clear answer for the common case; the wrapping below is what
     // actually keeps every write out.
     let verb = crate::sql_text::statement_verbs(sql).into_iter().next().unwrap_or_default();
@@ -555,6 +565,9 @@ async fn read_query(session: &DatabaseSession, sql: &str, max_rows: u64) -> Resu
 }
 
 async fn explain_query(session: &DatabaseSession, sql: &str) -> Result<(String, String), DatabaseError> {
+    if session.engine() == crate::Engine::Mongo {
+        return Err(DatabaseError::new("explain_query isn't available on MongoDB yet; run_read_query shows the documents."));
+    }
     if let Some(link) = session.mysql() {
         // EXPLAIN ANALYZE runs what it explains: only reads may be explained.
         let verb = crate::sql_text::statement_verbs(sql).into_iter().next().unwrap_or_default();

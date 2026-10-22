@@ -886,6 +886,424 @@ pub(crate) fn structure_change_commands(relation: &Relation, change: &crate::str
     }
 }
 
+// MARK: - Query editor
+
+/// One call in mongo shell syntax: `db.people.find({ age: { $gt: 30 } }).sort({ age: -1 }).limit(5)`.
+struct ShellCall {
+    /// None for database-level calls (db.runCommand, show dbs, use).
+    collection: Option<String>,
+    method: String,
+    arguments: Vec<Bson>,
+    /// .sort(), .limit(), .skip(), .projection() after find.
+    modifiers: Vec<(String, Vec<Bson>)>,
+}
+
+/// Methods that change data; refused on read-only connections and to AI tools.
+const WRITE_METHODS: &[&str] = &[
+    "insertOne", "insertMany", "updateOne", "updateMany", "replaceOne", "deleteOne", "deleteMany", "findOneAndUpdate",
+    "findOneAndReplace", "findOneAndDelete", "bulkWrite", "createIndex", "createIndexes", "dropIndex", "dropIndexes", "drop",
+    "renameCollection", "runCommand", "dropDatabase", "createCollection",
+];
+
+/// Read methods, the only ones AI tools may call.
+const READ_METHODS: &[&str] =
+    &["find", "findOne", "aggregate", "countDocuments", "estimatedDocumentCount", "distinct", "getCollectionNames", "showDatabases", "showCollections"];
+
+/// The calls in an editor's text, one per line or separated by `;`.
+fn parse_script(text: &str) -> Result<Vec<ShellCall>, DatabaseError> {
+    let mut parser = ShellParser { chars: text.chars().collect(), index: 0 };
+    let mut calls = Vec::new();
+    loop {
+        parser.space();
+        while parser.eat(';') {
+            parser.space();
+        }
+        if parser.index >= parser.chars.len() {
+            break;
+        }
+        calls.push(parse_call(&mut parser)?);
+    }
+    if calls.is_empty() {
+        return Err(DatabaseError::new("There is nothing to run. Try db.collection.find()."));
+    }
+    Ok(calls)
+}
+
+fn parse_call(parser: &mut ShellParser) -> Result<ShellCall, DatabaseError> {
+    let arguments = |parser: &mut ShellParser| -> Result<Vec<Bson>, DatabaseError> {
+        parser.expect('(')?;
+        let mut values = Vec::new();
+        loop {
+            if parser.eat(')') {
+                break;
+            }
+            let value = parser.value()?;
+            values.push(Bson::try_from(value).map_err(|error| DatabaseError::new(format!("Not a valid value: {error}")))?);
+            if !parser.eat(',') {
+                parser.expect(')')?;
+                break;
+            }
+        }
+        Ok(values)
+    };
+    let first = parser.word();
+    // show dbs, show collections, use name
+    if first == "show" {
+        let what = parser.word();
+        let method = match what.as_str() {
+            "dbs" | "databases" => "showDatabases",
+            "collections" | "tables" => "showCollections",
+            _ => return Err(parser.error("show takes dbs or collections")),
+        };
+        return Ok(ShellCall { collection: None, method: method.into(), arguments: Vec::new(), modifiers: Vec::new() });
+    }
+    if first == "use" {
+        let name = parser.word();
+        return Ok(ShellCall { collection: None, method: "use".into(), arguments: vec![Bson::String(name)], modifiers: Vec::new() });
+    }
+    // The parser reads dots into words: "db.people.find" is one word.
+    let mut parts: Vec<String> = first.split('.').map(str::to_string).collect();
+    if parts.first().map(String::as_str) != Some("db") {
+        return Err(parser.error("A command starts with db., show or use"));
+    }
+    parts.remove(0);
+    let mut collection = None;
+    // db.getCollection("name").find(…) and db["name"].find(…)
+    if parts.first().map(String::as_str) == Some("getCollection") && parts.len() == 1 {
+        let name = arguments(parser)?;
+        collection = name.first().and_then(|name| name.as_str().map(str::to_string));
+        if !parser.eat('.') {
+            return Err(parser.error("Expected .method() after getCollection()"));
+        }
+        parts = parser.word().split('.').map(str::to_string).collect();
+    } else if parts.is_empty() && parser.eat('[') {
+        let value = parser.value()?;
+        parser.expect(']')?;
+        collection = value.as_str().map(str::to_string);
+        if !parser.eat('.') {
+            return Err(parser.error("Expected .method() after db[…]"));
+        }
+        parts = parser.word().split('.').map(str::to_string).collect();
+    }
+    let method = parts.pop().ok_or_else(|| parser.error("Expected a method"))?;
+    if collection.is_none() && !parts.is_empty() {
+        collection = Some(parts.join("."));
+    }
+    let arguments_list = arguments(parser)?;
+    let mut modifiers = Vec::new();
+    while parser.eat('.') {
+        let name = parser.word();
+        modifiers.push((name, arguments(parser)?));
+    }
+    Ok(ShellCall { collection, method, arguments: arguments_list, modifiers })
+}
+
+fn document_argument(call: &ShellCall, index: usize) -> Result<Document, DatabaseError> {
+    match call.arguments.get(index) {
+        None | Some(Bson::Null) => Ok(Document::new()),
+        Some(Bson::Document(document)) => Ok(document.clone()),
+        Some(_) => Err(DatabaseError::new(format!("Argument {} of {}() must be a document.", index + 1, call.method))),
+    }
+}
+
+/// Documents as a result set: the fields in the order they first appear.
+fn result_set(documents: &[Document], total: u64) -> crate::query::ResultSet {
+    let mut columns: Vec<String> = Vec::new();
+    for document in documents {
+        for field in document.keys() {
+            if !columns.contains(field) {
+                columns.push(field.clone());
+            }
+        }
+    }
+    let numeric = columns
+        .iter()
+        .map(|column| {
+            documents.iter().filter_map(|document| document.get(column)).find(|value| **value != Bson::Null).is_some_and(|value| {
+                matches!(value, Bson::Int32(_) | Bson::Int64(_) | Bson::Double(_) | Bson::Decimal128(_))
+            })
+        })
+        .collect();
+    let rows = documents.iter().map(|document| columns.iter().map(|column| document.get(column).and_then(display).map(|text| cut(&text))).collect()).collect();
+    crate::query::ResultSet { columns, rows, total_rows: total, numeric_columns: numeric }
+}
+
+impl MongoLink {
+    /// The query editor's Run: each call in turn. A single server has no
+    /// transactions, so a failing call doesn't undo the ones before it.
+    async fn run_script(&self, default_database: String, text: String, max_rows: u64, read_only: bool) -> Result<crate::query::QueryResult, DatabaseError> {
+        let started = std::time::Instant::now();
+        let calls = parse_script(&text)?;
+        let mut database = default_database;
+        let mut result_sets = Vec::new();
+        let mut statement_counts = Vec::new();
+        let mut verbs = Vec::new();
+        for call in &calls {
+            if (read_only || self.read_only) && !READ_METHODS.contains(&call.method.as_str()) && call.method != "use" {
+                return Err(DatabaseError::new(format!("{}() isn't allowed here: only reads are.", call.method)));
+            }
+            verbs.push(call.method.clone());
+            if call.method == "use" {
+                database = call.arguments.first().and_then(|name| name.as_str()).unwrap_or_default().to_string();
+                statement_counts.push(0);
+                continue;
+            }
+            let (set, count) = self.run_call(&database, call, max_rows, read_only).await?;
+            statement_counts.push(count);
+            if let Some(set) = set {
+                result_sets.push(set);
+            }
+        }
+        Ok(crate::query::QueryResult {
+            result_sets,
+            statement_counts,
+            statement_verbs: verbs,
+            elapsed_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+        })
+    }
+
+    async fn run_call(&self, database: &str, call: &ShellCall, max_rows: u64, read_only: bool) -> Result<(Option<crate::query::ResultSet>, u64), DatabaseError> {
+        let fail = |error| self.fail(error);
+        let db = self.client.database(if database.is_empty() { "test" } else { database });
+        let collection = || -> Result<mongodb::Collection<Document>, DatabaseError> {
+            let name = call.collection.as_deref().ok_or_else(|| DatabaseError::new(format!("{}() needs a collection: db.name.{}()", call.method, call.method)))?;
+            Ok(db.collection(name))
+        };
+        let one_value = |name: &str, value: Bson| -> (Option<crate::query::ResultSet>, u64) {
+            (Some(result_set(&[doc! { name: value }], 1)), 1)
+        };
+        // AI tools get a time limit; the editor has Cancel… which MongoDB lacks, so a long one too.
+        let time_limit = Duration::from_secs(if read_only { 30 } else { 300 });
+        let limit = i64::try_from(max_rows).unwrap_or(i64::MAX);
+        Ok(match call.method.as_str() {
+            "find" | "findOne" => {
+                let filter = document_argument(call, 0)?;
+                let mut find = mongodb::options::FindOptions::default();
+                if let Some(Bson::Document(projection)) = call.arguments.get(1) {
+                    find.projection = Some(projection.clone());
+                }
+                let mut user_limit = if call.method == "findOne" { Some(1) } else { None };
+                for (name, arguments) in &call.modifiers {
+                    let first = arguments.first();
+                    match (name.as_str(), first) {
+                        ("sort", Some(Bson::Document(sort))) => find.sort = Some(sort.clone()),
+                        ("projection" | "project", Some(Bson::Document(projection))) => find.projection = Some(projection.clone()),
+                        ("limit", Some(value)) => user_limit = value.as_i64().or_else(|| value.as_i32().map(i64::from)).or_else(|| value.as_f64().map(|value| value as i64)),
+                        ("skip", Some(value)) => find.skip = value.as_i64().or_else(|| value.as_i32().map(i64::from)).map(|skip| skip as u64),
+                        ("toArray" | "pretty", _) => {}
+                        (other, _) => return Err(DatabaseError::new(format!(".{other}() isn't supported after find()."))),
+                    }
+                }
+                find.limit = Some(user_limit.map_or(limit, |user| user.min(limit)));
+                find.max_time = Some(time_limit);
+                let documents: Vec<Document> =
+                    collection()?.find(filter.clone()).with_options(find.clone()).await.map_err(fail)?.try_collect().await.map_err(fail)?;
+                // The real total, as the grid's footer shows it, when the page is full.
+                let total = if user_limit.is_none() && documents.len() as u64 >= max_rows {
+                    let skip = find.skip.unwrap_or(0);
+                    collection()?.count_documents(filter).await.map_err(fail)?.saturating_sub(skip)
+                } else {
+                    documents.len() as u64
+                };
+                (Some(result_set(&documents, total)), total)
+            }
+            "aggregate" => {
+                let pipeline: Vec<Document> = match call.arguments.first() {
+                    Some(Bson::Array(stages)) => stages.iter().filter_map(|stage| stage.as_document().cloned()).collect(),
+                    // Stages as separate arguments, as the old shell took them.
+                    _ => call.arguments.iter().filter_map(|stage| stage.as_document().cloned()).collect(),
+                };
+                if read_only || self.read_only {
+                    if let Some(stage) = pipeline.iter().flat_map(|stage| stage.keys()).find(|key| *key == "$out" || *key == "$merge") {
+                        return Err(DatabaseError::new(format!("{stage} writes to a collection; only reads are allowed here.")));
+                    }
+                }
+                let mut cursor = collection()?.aggregate(pipeline).max_time(time_limit).await.map_err(fail)?;
+                let mut documents = Vec::new();
+                let mut total = 0u64;
+                while let Some(document) = cursor.try_next().await.map_err(fail)? {
+                    if total < max_rows {
+                        documents.push(document);
+                    }
+                    total += 1;
+                }
+                (Some(result_set(&documents, total)), total)
+            }
+            "countDocuments" => {
+                let count = collection()?.count_documents(document_argument(call, 0)?).max_time(time_limit).await.map_err(fail)?;
+                one_value("count", Bson::Int64(count as i64))
+            }
+            "estimatedDocumentCount" => {
+                let count = collection()?.estimated_document_count().await.map_err(fail)?;
+                one_value("count", Bson::Int64(count as i64))
+            }
+            "distinct" => {
+                let field = call.arguments.first().and_then(|field| field.as_str()).ok_or_else(|| DatabaseError::new("distinct() needs a field name."))?;
+                let values = collection()?.distinct(field, document_argument(call, 1)?).max_time(time_limit).await.map_err(fail)?;
+                let documents: Vec<Document> = values.into_iter().take(usize::try_from(max_rows).unwrap_or(usize::MAX)).map(|value| doc! { field: value }).collect();
+                let count = documents.len() as u64;
+                (Some(result_set(&documents, count)), count)
+            }
+            "getCollectionNames" | "showCollections" => {
+                let mut names = db.list_collection_names().await.map_err(fail)?;
+                names.sort();
+                let documents: Vec<Document> = names.into_iter().map(|name| doc! { "collection": name }).collect();
+                let count = documents.len() as u64;
+                (Some(result_set(&documents, count)), count)
+            }
+            "showDatabases" => {
+                let mut names = self.client.list_database_names().await.map_err(fail)?;
+                names.sort();
+                let documents: Vec<Document> = names.into_iter().map(|name| doc! { "database": name }).collect();
+                let count = documents.len() as u64;
+                (Some(result_set(&documents, count)), count)
+            }
+            "insertOne" => {
+                let result = collection()?.insert_one(document_argument(call, 0)?).await.map_err(fail)?;
+                (Some(result_set(&[doc! { "insertedId": result.inserted_id }], 1)), 1)
+            }
+            "insertMany" => {
+                let documents: Vec<Document> = match call.arguments.first() {
+                    Some(Bson::Array(documents)) => documents.iter().filter_map(|document| document.as_document().cloned()).collect(),
+                    _ => return Err(DatabaseError::new("insertMany() takes an array of documents.")),
+                };
+                let result = collection()?.insert_many(documents).await.map_err(fail)?;
+                (None, result.inserted_ids.len() as u64)
+            }
+            "updateOne" | "updateMany" => {
+                let (filter, update) = (document_argument(call, 0)?, document_argument(call, 1)?);
+                let result = if call.method == "updateOne" {
+                    collection()?.update_one(filter, update).await
+                } else {
+                    collection()?.update_many(filter, update).await
+                }
+                .map_err(fail)?;
+                (Some(result_set(&[doc! { "matched": result.matched_count as i64, "modified": result.modified_count as i64 }], 1)), result.modified_count)
+            }
+            "replaceOne" => {
+                let result = collection()?.replace_one(document_argument(call, 0)?, document_argument(call, 1)?).await.map_err(fail)?;
+                (Some(result_set(&[doc! { "matched": result.matched_count as i64, "modified": result.modified_count as i64 }], 1)), result.modified_count)
+            }
+            "deleteOne" | "deleteMany" => {
+                let filter = document_argument(call, 0)?;
+                let result = if call.method == "deleteOne" { collection()?.delete_one(filter).await } else { collection()?.delete_many(filter).await }.map_err(fail)?;
+                (None, result.deleted_count)
+            }
+            "createIndex" => {
+                let keys = document_argument(call, 0)?;
+                let mut model = mongodb::IndexModel::builder().keys(keys).build();
+                if let Some(Bson::Document(options)) = call.arguments.get(1) {
+                    model.options = Some(mongodb::bson::from_document(options.clone()).map_err(|error| DatabaseError::new(format!("Index options: {error}")))?);
+                }
+                let result = collection()?.create_index(model).await.map_err(fail)?;
+                one_value("index", Bson::String(result.index_name))
+            }
+            "dropIndex" => {
+                let name = call.arguments.first().and_then(|name| name.as_str()).ok_or_else(|| DatabaseError::new("dropIndex() takes the index's name."))?;
+                collection()?.drop_index(name).await.map_err(fail)?;
+                (None, 0)
+            }
+            "drop" => {
+                collection()?.drop().await.map_err(fail)?;
+                (None, 0)
+            }
+            "runCommand" => {
+                let reply = db.run_command(document_argument(call, 0)?).await.map_err(fail)?;
+                (Some(result_set(&[reply], 1)), 1)
+            }
+            other => return Err(DatabaseError::new(format!("{other}() isn't supported in TablePort's editor."))),
+        })
+    }
+
+    /// AI access: one read call, its documents as relaxed extended JSON.
+    async fn read_json(&self, default_database: String, text: String, max_rows: u64) -> Result<Vec<serde_json::Value>, DatabaseError> {
+        let calls = parse_script(&text)?;
+        let [call] = calls.as_slice() else {
+            return Err(DatabaseError::new("Give one call, such as db.people.find({ age: { $gt: 30 } })."));
+        };
+        if !READ_METHODS.contains(&call.method.as_str()) {
+            return Err(DatabaseError::new(format!("{}() isn't allowed: AI access only reads.", call.method)));
+        }
+        if WRITE_METHODS.contains(&call.method.as_str()) {
+            return Err(DatabaseError::new(format!("{}() writes; AI access only reads.", call.method)));
+        }
+        let (set, _) = self.run_call(&default_database, call, max_rows, true).await?;
+        let Some(set) = set else { return Ok(Vec::new()) };
+        Ok(set
+            .rows
+            .into_iter()
+            .map(|row| serde_json::Value::Object(set.columns.iter().cloned().zip(row.into_iter().map(|cell| cell.map_or(serde_json::Value::Null, serde_json::Value::String))).collect()))
+            .collect())
+    }
+
+    /// Writes a collection's documents to `path`, as they arrive.
+    async fn export(
+        &self,
+        relation: &Relation,
+        columns: &[Column],
+        filters: &[RowFilter],
+        sort: Option<&RowSort>,
+        scope: &crate::export::ExportScope,
+        format: crate::export::ExportFormat,
+        path: &str,
+    ) -> Result<u64, DatabaseError> {
+        use crate::export::{ExportFormat, ExportScope};
+        use tokio::io::AsyncWriteExt;
+        if format == ExportFormat::Sql {
+            return Err(DatabaseError::new("MongoDB documents export as JSON or CSV."));
+        }
+        let id_type = columns.iter().find(|column| column.name == "_id").map(|column| column.column_type.clone()).unwrap_or_default();
+        let mut find = mongodb::options::FindOptions::default();
+        find.sort = Some(match sort {
+            Some(sort) => doc! { sort.column.clone(): if sort.ascending { 1 } else { -1 } },
+            None => doc! { "_id": 1 },
+        });
+        let filter = match scope {
+            ExportScope::Keys { keys } => {
+                let ids = keys.iter().filter_map(|key| key.first()).map(|text| text_value(text, &id_type)).collect::<Result<Vec<_>, _>>()?;
+                doc! { "_id": { "$in": ids } }
+            }
+            ExportScope::Page { offset, limit } => {
+                find.skip = Some(*offset);
+                find.limit = Some(i64::try_from(*limit).unwrap_or(i64::MAX));
+                filter_document(filters, columns)?
+            }
+            ExportScope::All => filter_document(filters, columns)?,
+        };
+        let write_error = |error: std::io::Error| DatabaseError::new(format!("Can't write {path}: {error}."));
+        let file = tokio::fs::File::create(path).await.map_err(|error| DatabaseError::new(format!("Can't create {path}: {error}.")))?;
+        let mut out = tokio::io::BufWriter::new(file);
+        let mut cursor = self.collection(relation).find(filter).with_options(find).await.map_err(|error| self.fail(error))?;
+        let mut count = 0u64;
+        if format == ExportFormat::Csv {
+            let header = columns.iter().map(|column| crate::sqlite::csv_field(&column.name)).collect::<Vec<_>>().join(",");
+            out.write_all(format!("{header}\n").as_bytes()).await.map_err(write_error)?;
+        } else {
+            out.write_all(b"[").await.map_err(write_error)?;
+        }
+        while let Some(document) = cursor.try_next().await.map_err(|error| self.fail(error))? {
+            let line = match format {
+                ExportFormat::Csv => {
+                    let fields = columns
+                        .iter()
+                        .map(|column| document.get(&column.name).and_then(display).as_deref().map(crate::sqlite::csv_field).unwrap_or_default())
+                        .collect::<Vec<_>>();
+                    format!("{}\n", fields.join(","))
+                }
+                // Whole documents, in relaxed extended JSON: dates and ObjectIds keep their type.
+                _ => format!("{}{}", if count == 0 { "\n  " } else { ",\n  " }, Bson::Document(document).into_relaxed_extjson()),
+            };
+            out.write_all(line.as_bytes()).await.map_err(write_error)?;
+            count += 1;
+        }
+        if format == ExportFormat::Json {
+            out.write_all(if count == 0 { b"]\n" } else { b"\n]\n" }).await.map_err(write_error)?;
+        }
+        out.flush().await.map_err(write_error)?;
+        Ok(count)
+    }
+}
+
 // MARK: - Session
 
 impl DatabaseSession {
@@ -935,6 +1353,34 @@ impl DatabaseSession {
     pub(crate) async fn mongo_apply_structure(&self, relation: Relation, change: crate::structure::StructureChange) -> Result<(), DatabaseError> {
         let link = self.mongo()?;
         on_runtime(async move { link.apply_structure(&relation, change).await }).await
+    }
+
+    pub(crate) async fn mongo_run(&self, text: String, max_rows: u64) -> Result<crate::query::QueryResult, DatabaseError> {
+        let link = self.mongo()?;
+        let database = self.settings().database;
+        on_runtime(async move { link.run_script(database, text, max_rows, false).await }).await
+    }
+
+    /// AI access: one read call.
+    pub(crate) async fn mongo_read(&self, text: String, max_rows: u64) -> Result<Vec<serde_json::Value>, DatabaseError> {
+        let link = self.mongo()?;
+        let database = self.settings().database;
+        on_runtime(async move { link.read_json(database, text, max_rows).await }).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn mongo_export(
+        &self,
+        relation: Relation,
+        columns: Vec<Column>,
+        filters: Vec<RowFilter>,
+        sort: Option<RowSort>,
+        scope: crate::export::ExportScope,
+        format: crate::export::ExportFormat,
+        path: String,
+    ) -> Result<u64, DatabaseError> {
+        let link = self.mongo()?;
+        on_runtime(async move { link.export(&relation, &columns, &filters, sort.as_ref(), &scope, format, &path).await }).await
     }
 
     pub(crate) async fn mongo_full_rows(
