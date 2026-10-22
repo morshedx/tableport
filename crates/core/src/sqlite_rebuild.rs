@@ -164,12 +164,32 @@ impl DatabaseSession {
             .map(|name| quote_identifier(&name))
             .collect::<Vec<_>>()
             .join(", ");
+        // Views, and triggers of other tables, may name the table; while it is
+        // gone, SQLite refuses the rename over them. They step aside and come
+        // back as they were. (libSQL has no legacy_alter_table to avoid this.)
+        let bystanders: Vec<(String, String, String)> = self
+            .text_rows(format!(
+                "SELECT type, name, sql FROM {schema}.sqlite_master WHERE sql IS NOT NULL \
+                 AND (type = 'view' OR (type = 'trigger' AND tbl_name <> {table_literal})) ORDER BY rowid"
+            ))
+            .await?
+            .into_iter()
+            .filter_map(|row| {
+                let [Some(kind), Some(name), Some(sql)] = <[Option<String>; 3]>::try_from(row).ok()? else { return None };
+                Some((kind, name, sql))
+            })
+            .collect();
         let mut statements = vec![
             table.sql(&quoted_new),
             format!("INSERT INTO {quoted_new} ({columns}) SELECT {columns} FROM {quoted_table};"),
+        ];
+        for (kind, name, _) in &bystanders {
+            statements.push(format!("DROP {} {schema}.{};", kind.to_uppercase(), quote_identifier(name)));
+        }
+        statements.extend([
             format!("DROP TABLE {quoted_table};"),
             format!("ALTER TABLE {quoted_new} RENAME TO {};", quote_identifier(&relation.name)),
-        ];
+        ]);
         // Copying the rows restarts AUTOINCREMENT at the highest id; ids
         // of rows deleted earlier must stay used.
         if table.autoincrement {
@@ -188,6 +208,9 @@ impl DatabaseSession {
             .await?;
         for sql in dependents.into_iter().filter_map(|row| row.into_iter().next().flatten()) {
             statements.push(qualify_create(&sql, &relation.schema));
+        }
+        for (_, _, sql) in &bystanders {
+            statements.push(qualify_create(sql, &relation.schema));
         }
         if let Some((old, new)) = rename {
             statements.push(format!("ALTER TABLE {quoted_table} RENAME COLUMN {} TO {};", quote_identifier(&old), quote_identifier(&new)));
@@ -232,12 +255,12 @@ pub(crate) fn default_expression(default: &str) -> String {
     }
 }
 
-/// Puts the schema on an index's or trigger's name, so it is recreated in
-/// the table's schema: the saved SQL names it without one.
+/// Puts the schema on an index's, trigger's or view's name, so it is
+/// recreated in the table's schema: the saved SQL names it without one.
 fn qualify_create(sql: &str, schema: &str) -> String {
     let tokens = tokenize(sql);
     let words: Vec<String> = tokens.iter().map(|token| sql[token.start..token.end].to_uppercase()).collect();
-    let Some(mut position) = words.iter().position(|word| word == "INDEX" || word == "TRIGGER") else {
+    let Some(mut position) = words.iter().position(|word| word == "INDEX" || word == "TRIGGER" || word == "VIEW") else {
         return sql.to_string();
     };
     position += 1;

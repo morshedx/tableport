@@ -125,8 +125,7 @@ impl DatabaseSession {
     /// The running call then fails with "canceling statement due to user request".
     pub async fn cancel_query(&self) -> Result<(), DatabaseError> {
         if let Some(link) = self.sqlite() {
-            link.interrupt();
-            return Ok(());
+            return link.interrupt();
         }
         if let Some(link) = self.mysql() {
             return on_runtime(async move { link.cancel().await }).await;

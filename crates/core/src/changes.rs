@@ -28,7 +28,7 @@ impl SqlFunction {
     fn sql(self, engine: Engine) -> &'static str {
         match (self, engine) {
             (Self::Now, Engine::Postgres | Engine::Mysql) => "now()",
-            (Self::Now, Engine::Sqlite) => "CURRENT_TIMESTAMP",
+            (Self::Now, Engine::Sqlite | Engine::Libsql) => "CURRENT_TIMESTAMP",
             (Self::CurrentDate, _) => "CURRENT_DATE",
             (Self::CurrentTime, _) => "CURRENT_TIME",
         }
@@ -68,7 +68,7 @@ pub fn insert_sql(row: &NewRow, relation: &Relation, columns: &[Column], engine:
     let set: Vec<&Column> = columns
         .iter()
         .filter(|column| match row.values.get(&column.name) {
-            Some(CellDraft::Default) => engine != Engine::Sqlite,
+            Some(CellDraft::Default) => !engine.is_sqlite(),
             Some(_) => true,
             None => false,
         })
@@ -190,7 +190,7 @@ fn draft_sql(draft: Option<&CellDraft>, engine: Engine) -> Result<String, Databa
     match draft {
         Some(CellDraft::Value { text }) => quote_literal(text),
         Some(CellDraft::Null) | None => Ok("NULL".to_string()),
-        Some(CellDraft::Default) if engine == Engine::Sqlite => {
+        Some(CellDraft::Default) if engine.is_sqlite() => {
             Err(DatabaseError::new("SQLite can't set an existing value back to the column's default. Type the value instead."))
         }
         Some(CellDraft::Default) => Ok("DEFAULT".to_string()),

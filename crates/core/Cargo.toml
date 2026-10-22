@@ -29,6 +29,8 @@ sqlformat = "0.5"  # Beautify in the query editor
 # Format JSON in the cell editor: keeps key order and exact numbers.
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
 # Local store: query history and saved queries. Bundled, so no system SQLite version matters.
+# libSQL and Turso: the Hrana protocol, JSON over HTTPS. Native TLS, as for the others.
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
 # MySQL and MariaDB. Native TLS, as for PostgreSQL; the Rust zlib, so no C toolchain.
 mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "native-tls-tls"] }
 rusqlite = { version = "0.37", features = ["bundled", "column_decltype"] }

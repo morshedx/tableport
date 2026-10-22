@@ -259,7 +259,7 @@ pub fn drop_relation_sql(relation: Relation, cascade: bool, engine: crate::Engin
 pub fn truncate_sql(relation: Relation, restart_identity: bool, cascade: bool, engine: crate::Engine) -> String {
     // SQLite has no TRUNCATE; DELETE without WHERE empties the table quickly.
     match engine {
-        crate::Engine::Sqlite => return format!("DELETE FROM {};", relation.quoted_name()),
+        crate::Engine::Sqlite | crate::Engine::Libsql => return format!("DELETE FROM {};", relation.quoted_name()),
         // TRUNCATE restarts AUTO_INCREMENT on its own, and has no CASCADE.
         crate::Engine::Mysql => return format!("TRUNCATE TABLE {};", relation.quoted_name()),
         crate::Engine::Postgres => {}

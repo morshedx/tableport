@@ -366,7 +366,7 @@ pub(crate) fn text(value: ValueRef<'_>) -> Option<String> {
 
 /// A real as SQLite writes it: whole numbers keep `.0` (`1.0`, not `1`),
 /// so the grid, query results and exports agree with SQLite's own CAST.
-fn real(number: f64) -> String {
+pub(crate) fn real(number: f64) -> String {
     if number.is_finite() && number.fract() == 0.0 && number.abs() < 1e15 {
         format!("{number:.1}")
     } else {
@@ -375,7 +375,7 @@ fn real(number: f64) -> String {
 }
 
 /// Whether SQLite's affinity rules give a declared type a numeric affinity.
-fn is_numeric_type(declared: &str) -> bool {
+pub(crate) fn is_numeric_type(declared: &str) -> bool {
     let upper = declared.to_uppercase();
     ["INT", "REAL", "FLOA", "DOUB", "NUMERIC", "DECIMAL"].iter().any(|word| upper.contains(word))
 }

@@ -76,7 +76,7 @@ impl DatabaseSession {
     /// the functions, the schemas and the search path.
     pub async fn completer(&self) -> Result<Arc<Completer>, DatabaseError> {
         match self.engine() {
-            crate::Engine::Sqlite => return self.sqlite_completer().await,
+            crate::Engine::Sqlite | crate::Engine::Libsql => return self.sqlite_completer().await,
             crate::Engine::Mysql => return self.mysql_completer().await,
             crate::Engine::Postgres => {}
         }

@@ -31,6 +31,16 @@ pub enum Engine {
     /// MySQL or MariaDB. `database` is optional: the sidebar shows every
     /// database of the server.
     Mysql,
+    /// libSQL or Turso: SQLite on a server. `database` is its URL
+    /// (libsql://…, https://…) and `password` its auth token.
+    Libsql,
+}
+
+impl Engine {
+    /// SQLite's SQL, catalog and screens: a file or a libSQL server.
+    pub(crate) fn is_sqlite(self) -> bool {
+        matches!(self, Engine::Sqlite | Engine::Libsql)
+    }
 }
 
 /// Everything needed to open one connection.
@@ -59,6 +69,12 @@ impl ConnectionSettings {
             Engine::Sqlite => std::path::Path::new(&self.database)
                 .file_name()
                 .map_or_else(|| self.database.clone(), |name| name.to_string_lossy().into_owned()),
+            // The URL's host: libsql://name-org.turso.io → name-org.turso.io.
+            Engine::Libsql => {
+                let url = self.database.trim();
+                let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+                rest.split('/').next().unwrap_or(rest).to_string()
+            }
         }
     }
 }
@@ -76,6 +92,7 @@ enum Link {
     Postgres(PgLink),
     Sqlite(crate::sqlite::SqliteLink),
     Mysql(crate::mysql::MysqlLink),
+    Libsql(crate::libsql::LibsqlLink),
 }
 
 struct PgLink {
@@ -109,6 +126,7 @@ impl DatabaseSession {
             Link::Postgres(link) => link.server_version.clone(),
             Link::Sqlite(link) => link.version.clone(),
             Link::Mysql(link) => link.version.clone(),
+            Link::Libsql(link) => link.version.clone(),
         }
     }
 
@@ -130,7 +148,7 @@ impl DatabaseSession {
     /// A round trip to the server, failing after 5 seconds: tells whether
     /// the connection still works, for example after the Mac slept.
     pub async fn ping(&self) -> Result<(), DatabaseError> {
-        if self.settings.engine == Engine::Sqlite {
+        if self.settings.engine.is_sqlite() {
             return self.execute("SELECT 1".into()).await;
         }
         if let Some(link) = self.mysql() {
@@ -158,6 +176,7 @@ impl DatabaseSession {
             Link::Postgres(link) => link.client.is_closed(),
             Link::Sqlite(link) => link.is_closed(),
             Link::Mysql(link) => link.is_closed(),
+            Link::Libsql(link) => link.is_closed(),
         }
     }
 
@@ -166,6 +185,7 @@ impl DatabaseSession {
             Link::Postgres(link) => link.connection_task.abort(),
             Link::Sqlite(link) => link.close(),
             Link::Mysql(link) => link.close(),
+            Link::Libsql(link) => link.close(),
         }
     }
 
@@ -208,14 +228,15 @@ impl DatabaseSession {
     pub(crate) fn client(&self) -> Result<Arc<Client>, DatabaseError> {
         match &*self.read_link() {
             Link::Postgres(link) => Ok(link.client.clone()),
-            Link::Sqlite(_) | Link::Mysql(_) => Err(DatabaseError::new("This needs a PostgreSQL connection.")),
+            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) => Err(DatabaseError::new("This needs a PostgreSQL connection.")),
         }
     }
 
-    /// The SQLite link, when the connection is to a SQLite file.
-    pub(crate) fn sqlite(&self) -> Option<crate::sqlite::SqliteLink> {
+    /// The SQLite link: a file, or a libSQL server.
+    pub(crate) fn sqlite(&self) -> Option<crate::libsql::SqliteLike> {
         match &*self.read_link() {
-            Link::Sqlite(link) => Some(link.clone()),
+            Link::Sqlite(link) => Some(crate::libsql::SqliteLike::File(link.clone())),
+            Link::Libsql(link) => Some(crate::libsql::SqliteLike::Remote(link.clone())),
             Link::Postgres(_) | Link::Mysql(_) => None,
         }
     }
@@ -224,14 +245,14 @@ impl DatabaseSession {
     pub(crate) fn mysql(&self) -> Option<crate::mysql::MysqlLink> {
         match &*self.read_link() {
             Link::Mysql(link) => Some(link.clone()),
-            Link::Postgres(_) | Link::Sqlite(_) => None,
+            Link::Postgres(_) | Link::Sqlite(_) | Link::Libsql(_) => None,
         }
     }
 
     pub(crate) fn dialect(&self) -> crate::rows::Dialect {
         match self.settings.engine {
             Engine::Postgres => crate::rows::Dialect::Postgres,
-            Engine::Sqlite => crate::rows::Dialect::Sqlite,
+            Engine::Sqlite | Engine::Libsql => crate::rows::Dialect::Sqlite,
             Engine::Mysql => crate::rows::Dialect::Mysql,
         }
     }
@@ -239,7 +260,7 @@ impl DatabaseSession {
     pub(crate) fn tls(&self) -> Option<postgres_native_tls::MakeTlsConnector> {
         match &*self.read_link() {
             Link::Postgres(link) => link.tls.clone(),
-            Link::Sqlite(_) | Link::Mysql(_) => None,
+            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) => None,
         }
     }
 
@@ -259,6 +280,7 @@ async fn open_link(settings: &ConnectionSettings) -> Result<Link, DatabaseError>
         Engine::Postgres => open_pg_link(settings).await.map(Link::Postgres),
         Engine::Sqlite => crate::sqlite::SqliteLink::open(settings).await.map(Link::Sqlite),
         Engine::Mysql => crate::mysql::MysqlLink::open(settings).await.map(Link::Mysql),
+        Engine::Libsql => crate::libsql::LibsqlLink::open(settings).await.map(Link::Libsql),
     }
 }
 

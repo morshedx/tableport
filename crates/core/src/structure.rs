@@ -53,7 +53,7 @@ pub struct TableStructure {
 impl DatabaseSession {
     pub async fn structure(&self, relation: Relation) -> Result<TableStructure, DatabaseError> {
         match self.engine() {
-            Engine::Sqlite => return self.sqlite_structure(&relation).await,
+            Engine::Sqlite | Engine::Libsql => return self.sqlite_structure(&relation).await,
             Engine::Mysql => return self.mysql_structure(&relation).await,
             Engine::Postgres => {}
         }
@@ -182,7 +182,7 @@ pub(crate) const REFERENTIAL_ACTIONS: &[&str] = &["NO ACTION", "RESTRICT", "CASC
 #[uniffi::export]
 pub fn structure_change_sql(relation: Relation, change: StructureChange, engine: Engine) -> Result<Vec<String>, DatabaseError> {
     match engine {
-        Engine::Sqlite => return sqlite_structure_change_sql(&relation, change),
+        Engine::Sqlite | Engine::Libsql => return sqlite_structure_change_sql(&relation, change),
         Engine::Mysql => return crate::mysql::structure_change_sql(&relation, &change, None),
         Engine::Postgres => {}
     }
@@ -343,7 +343,7 @@ impl DatabaseSession {
     /// before Apply. On SQLite, some changes rebuild the table, which needs
     /// its current definition.
     pub async fn structure_change_statements(&self, relation: Relation, change: StructureChange) -> Result<Vec<String>, DatabaseError> {
-        if self.engine() == Engine::Sqlite && crate::sqlite_rebuild::needs_rebuild(&change) {
+        if self.engine().is_sqlite() && crate::sqlite_rebuild::needs_rebuild(&change) {
             return Ok(self.sqlite_rebuild(&relation, change).await?.statements);
         }
         if self.engine() == Engine::Mysql {
@@ -365,7 +365,7 @@ pub struct NewTableColumn {
 /// by [`DatabaseSession::create_table`], in one transaction.
 #[uniffi::export]
 pub fn create_table_sql(schema: String, name: String, columns: Vec<NewTableColumn>, engine: Engine) -> Result<Vec<String>, DatabaseError> {
-    if engine == Engine::Sqlite && columns.iter().any(|entry| non_empty(&entry.column.comment).is_some()) {
+    if engine.is_sqlite() && columns.iter().any(|entry| non_empty(&entry.column.comment).is_some()) {
         return Err(DatabaseError::new("SQLite has no column comments."));
     }
     let name = name.trim();

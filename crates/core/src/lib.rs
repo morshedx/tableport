@@ -10,6 +10,7 @@ mod completion;
 mod error;
 mod export;
 mod mcp;
+mod libsql;
 mod mysql;
 mod query;
 mod rows;
