@@ -1,3 +1,4 @@
+use crate::rows::{quote_identifier, quote_literal};
 use crate::{DatabaseError, DatabaseSession, Relation};
 
 /// One column as the Structure view shows it.
@@ -125,5 +126,254 @@ impl DatabaseSession {
             })
             .collect();
         Ok(TableStructure { columns, indexes, constraints })
+    }
+}
+
+/// A column as the user describes it in the Structure view. `column_type`
+/// and `default_value` are SQL as typed (`varchar(255)`, `now()`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Record)]
+pub struct ColumnSpec {
+    pub name: String,
+    pub column_type: String,
+    pub nullable: bool,
+    pub default_value: Option<String>,
+    pub comment: Option<String>,
+}
+
+/// One change to a table's structure, made from the Structure view.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum StructureChange {
+    AddColumn { column: ColumnSpec },
+    /// Only what differs between `original` and `column` is changed.
+    EditColumn { original: ColumnDetail, column: ColumnSpec },
+    DropColumn { name: String, cascade: bool },
+    AddIndex { name: String, columns: Vec<String>, unique: bool },
+    DropIndex { name: String, cascade: bool },
+    AddForeignKey {
+        name: Option<String>,
+        column: String,
+        referenced: Relation,
+        referenced_column: String,
+        /// `CASCADE`, `SET NULL`, `RESTRICT`… ; None for the default, NO ACTION.
+        on_delete: Option<String>,
+    },
+    DropConstraint { name: String, cascade: bool },
+}
+
+/// Identity and generated columns show how they get their value where a
+/// default would be; that text isn't a DEFAULT expression.
+fn is_generated(default_value: &Option<String>) -> bool {
+    default_value.as_deref().is_some_and(|text| text.starts_with("GENERATED "))
+}
+
+fn non_empty(text: &Option<String>) -> Option<&str> {
+    text.as_deref().map(str::trim).filter(|text| !text.is_empty())
+}
+
+const REFERENTIAL_ACTIONS: &[&str] = &["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"];
+
+/// The statements that make `change` on `relation`, in order. They are run
+/// together, in one transaction, by [`DatabaseSession::apply_structure_change`].
+#[uniffi::export]
+pub fn structure_change_sql(relation: Relation, change: StructureChange) -> Result<Vec<String>, DatabaseError> {
+    let table = format!("ALTER TABLE {}", relation.quoted_name());
+    let schema = quote_identifier(&relation.schema);
+    let column_name = |name: &str| -> Result<String, DatabaseError> {
+        if name.trim().is_empty() {
+            return Err(DatabaseError::new("The column needs a name."));
+        }
+        Ok(quote_identifier(name.trim()))
+    };
+    let comment_sql = |column: &str, comment: &Option<String>| -> Result<String, DatabaseError> {
+        let value = match non_empty(comment) {
+            Some(text) => quote_literal(text)?,
+            None => "NULL".to_string(),
+        };
+        Ok(format!("COMMENT ON COLUMN {}.{column} IS {value};", relation.quoted_name()))
+    };
+
+    let mut statements = Vec::new();
+    match change {
+        StructureChange::AddColumn { column } => {
+            let name = column_name(&column.name)?;
+            let column_type = column.column_type.trim();
+            if column_type.is_empty() {
+                return Err(DatabaseError::new("The column needs a type."));
+            }
+            let mut sql = format!("{table} ADD COLUMN {name} {column_type}");
+            if !column.nullable {
+                sql += " NOT NULL";
+            }
+            if let Some(default) = non_empty(&column.default_value) {
+                sql += &format!(" DEFAULT {default}");
+            }
+            statements.push(sql + ";");
+            if non_empty(&column.comment).is_some() {
+                statements.push(comment_sql(&name, &column.comment)?);
+            }
+        }
+        StructureChange::EditColumn { original, column } => {
+            let old = quote_identifier(&original.name);
+            let name = column_name(&column.name)?;
+            if column.name.trim() != original.name {
+                statements.push(format!("{table} RENAME COLUMN {old} TO {name};"));
+            }
+            let column_type = column.column_type.trim();
+            if column_type.is_empty() {
+                return Err(DatabaseError::new("The column needs a type."));
+            }
+            if column_type != original.column_type {
+                // USING converts the stored values; without it Postgres refuses
+                // most type changes (text to integer, for example).
+                statements.push(format!("{table} ALTER COLUMN {name} TYPE {column_type} USING {name}::{column_type};"));
+            }
+            if column.nullable != original.nullable {
+                let action = if column.nullable { "DROP" } else { "SET" };
+                statements.push(format!("{table} ALTER COLUMN {name} {action} NOT NULL;"));
+            }
+            let new_default = non_empty(&column.default_value);
+            if !is_generated(&original.default_value) && new_default != non_empty(&original.default_value) {
+                statements.push(match new_default {
+                    Some(default) => format!("{table} ALTER COLUMN {name} SET DEFAULT {default};"),
+                    None => format!("{table} ALTER COLUMN {name} DROP DEFAULT;"),
+                });
+            }
+            if non_empty(&column.comment) != non_empty(&original.comment) {
+                statements.push(comment_sql(&name, &column.comment)?);
+            }
+        }
+        StructureChange::DropColumn { name, cascade } => {
+            statements.push(format!("{table} DROP COLUMN {}{};", column_name(&name)?, if cascade { " CASCADE" } else { "" }));
+        }
+        StructureChange::AddIndex { name, columns, unique } => {
+            if columns.is_empty() {
+                return Err(DatabaseError::new("Choose at least one column for the index."));
+            }
+            if name.trim().is_empty() {
+                return Err(DatabaseError::new("The index needs a name."));
+            }
+            let columns = columns.iter().map(|column| quote_identifier(column)).collect::<Vec<_>>().join(", ");
+            statements.push(format!(
+                "CREATE {}INDEX {} ON {} ({columns});",
+                if unique { "UNIQUE " } else { "" },
+                quote_identifier(name.trim()),
+                relation.quoted_name()
+            ));
+        }
+        StructureChange::DropIndex { name, cascade } => {
+            // An index lives in its table's schema.
+            statements.push(format!("DROP INDEX {schema}.{}{};", quote_identifier(&name), if cascade { " CASCADE" } else { "" }));
+        }
+        StructureChange::AddForeignKey { name, column, referenced, referenced_column, on_delete } => {
+            let mut sql = table.clone();
+            if let Some(name) = non_empty(&name) {
+                sql += &format!(" ADD CONSTRAINT {}", quote_identifier(name));
+            } else {
+                sql += " ADD";
+            }
+            sql += &format!(
+                " FOREIGN KEY ({}) REFERENCES {} ({})",
+                column_name(&column)?,
+                referenced.quoted_name(),
+                column_name(&referenced_column)?
+            );
+            if let Some(action) = non_empty(&on_delete) {
+                let action = action.to_uppercase();
+                if !REFERENTIAL_ACTIONS.contains(&action.as_str()) {
+                    return Err(DatabaseError::new(format!("Unknown ON DELETE action: {action}.")));
+                }
+                sql += &format!(" ON DELETE {action}");
+            }
+            statements.push(sql + ";");
+        }
+        StructureChange::DropConstraint { name, cascade } => {
+            statements.push(format!("{table} DROP CONSTRAINT {}{};", quote_identifier(&name), if cascade { " CASCADE" } else { "" }));
+        }
+    }
+    Ok(statements)
+}
+
+#[uniffi::export]
+impl DatabaseSession {
+    /// Runs a change's statements as one transaction: all of them or none.
+    /// Sent as one message, they form one implicit transaction that Postgres
+    /// rolls back on its own when a statement fails; an explicit BEGIN would
+    /// leave the session in a failed transaction instead.
+    pub async fn apply_structure_change(&self, relation: Relation, change: StructureChange) -> Result<(), DatabaseError> {
+        let statements = structure_change_sql(relation, change)?;
+        if statements.is_empty() {
+            return Ok(());
+        }
+        self.execute(statements.join("\n")).await
+    }
+}
+
+/// One column of a table being created.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Record)]
+pub struct NewTableColumn {
+    pub column: ColumnSpec,
+    /// Part of the primary key; several columns make a composite key.
+    pub primary_key: bool,
+}
+
+/// `CREATE TABLE`, then a `COMMENT ON COLUMN` for each comment. Run together
+/// by [`DatabaseSession::create_table`], in one transaction.
+#[uniffi::export]
+pub fn create_table_sql(schema: String, name: String, columns: Vec<NewTableColumn>) -> Result<Vec<String>, DatabaseError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(DatabaseError::new("The table needs a name."));
+    }
+    if columns.is_empty() {
+        return Err(DatabaseError::new("Add at least one column."));
+    }
+    let table = format!("{}.{}", quote_identifier(&schema), quote_identifier(name));
+    let mut seen = std::collections::HashSet::new();
+    let mut definitions = Vec::new();
+    let mut key = Vec::new();
+    let mut comments = Vec::new();
+    for (position, entry) in columns.iter().enumerate() {
+        let column = &entry.column;
+        let column_name = column.name.trim();
+        if column_name.is_empty() {
+            return Err(DatabaseError::new(format!("Column {} needs a name.", position + 1)));
+        }
+        if !seen.insert(column_name.to_string()) {
+            return Err(DatabaseError::new(format!("Two columns are named {column_name}.")));
+        }
+        let column_type = column.column_type.trim();
+        if column_type.is_empty() {
+            return Err(DatabaseError::new(format!("Column {column_name} needs a type.")));
+        }
+        let quoted = quote_identifier(column_name);
+        let mut definition = format!("  {quoted} {column_type}");
+        // Key columns are NOT NULL anyway; saying it again would be noise.
+        if !column.nullable && !entry.primary_key {
+            definition += " NOT NULL";
+        }
+        if let Some(default) = non_empty(&column.default_value) {
+            definition += &format!(" DEFAULT {default}");
+        }
+        definitions.push(definition);
+        if entry.primary_key {
+            key.push(quoted.clone());
+        }
+        if let Some(comment) = non_empty(&column.comment) {
+            comments.push(format!("COMMENT ON COLUMN {table}.{quoted} IS {};", quote_literal(comment)?));
+        }
+    }
+    if !key.is_empty() {
+        definitions.push(format!("  PRIMARY KEY ({})", key.join(", ")));
+    }
+    let mut statements = vec![format!("CREATE TABLE {table} (\n{}\n);", definitions.join(",\n"))];
+    statements.extend(comments);
+    Ok(statements)
+}
+
+#[uniffi::export]
+impl DatabaseSession {
+    /// Creates the table and its column comments as one transaction.
+    pub async fn create_table(&self, schema: String, name: String, columns: Vec<NewTableColumn>) -> Result<(), DatabaseError> {
+        self.execute(create_table_sql(schema, name, columns)?.join("\n")).await
     }
 }

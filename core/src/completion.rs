@@ -300,6 +300,52 @@ impl Completer {
     }
 }
 
+/// Quick open (⌘P): the indexes of `names` that match `query`, best first.
+/// A prefix beats a word start (`it` in order_items), which beats any
+/// substring, which beats letters in order with gaps; shorter names win a
+/// tie. Case is ignored. An empty query keeps every name, in order.
+#[uniffi::export]
+pub fn rank_names(query: String, names: Vec<String>) -> Vec<u32> {
+    let query = query.to_lowercase();
+    let mut hits: Vec<(usize, usize, u32)> = names
+        .iter()
+        .enumerate()
+        .filter_map(|(index, name)| {
+            let name = name.to_lowercase();
+            let score = name_score(&name, &query)?;
+            Some((score, name.chars().count(), index as u32))
+        })
+        .collect();
+    if !query.is_empty() {
+        hits.sort();
+    }
+    hits.into_iter().map(|(_, _, index)| index).collect()
+}
+
+/// Lower is better; None for no match. Both are lowercase.
+fn name_score(name: &str, query: &str) -> Option<usize> {
+    if query.is_empty() || name.starts_with(query) {
+        return Some(0);
+    }
+    if let Some(position) = name.find(query) {
+        let at_word_start = name[..position].ends_with(['_', '.', ' ', '-']);
+        return Some(if at_word_start { 1 } else { 2 });
+    }
+    // Letters in order: fewer skipped characters rank higher.
+    let mut name_chars = name.chars();
+    let mut skipped = 0;
+    for wanted in query.chars() {
+        loop {
+            let c = name_chars.next()?;
+            if c == wanted {
+                break;
+            }
+            skipped += 1;
+        }
+    }
+    Some(3 + skipped)
+}
+
 /// 0 when `name` starts with `typed`. Otherwise, when the first letters
 /// agree and the other typed letters appear in `name` in order (typing
 /// `sl` for select, `cnt` for count): 1 plus where the last one was found,
@@ -868,6 +914,26 @@ mod tests {
         assert_eq!(match_score("count", "cnt"), Some(5));
         assert_eq!(match_score("country", "cnt"), Some(5));
         assert_eq!(match_score("count", "xc"), None);
+    }
+
+    #[test]
+    fn quick_open_ranking() {
+        let names: Vec<String> = ["orders", "order_items", "customers", "customer_score", "revenue_by_country", "products"]
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let ranked = |query: &str| -> Vec<&str> {
+            rank_names(query.into(), names.clone()).into_iter().map(|index| names[index as usize].as_str()).collect()
+        };
+        // Prefix first, shorter first.
+        assert_eq!(ranked("ord"), ["orders", "order_items"]);
+        // A word start beats a substring elsewhere.
+        assert_eq!(ranked("it")[0], "order_items");
+        // Letters in order: `rbc` finds revenue_by_country.
+        assert_eq!(ranked("rbc"), ["revenue_by_country"]);
+        assert_eq!(ranked("CUS"), ["customers", "customer_score"]);
+        assert!(ranked("zzz").is_empty());
+        assert_eq!(ranked("").len(), names.len());
     }
 
     #[test]

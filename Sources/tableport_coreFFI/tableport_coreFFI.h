@@ -393,6 +393,16 @@ RustBuffer uniffi_tableport_core_fn_method_databasesession_server_version(uint64
 RustBuffer uniffi_tableport_core_fn_method_databasesession_settings(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_DATABASESESSION_APPLY_STRUCTURE_CHANGE
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_DATABASESESSION_APPLY_STRUCTURE_CHANGE
+uint64_t uniffi_tableport_core_fn_method_databasesession_apply_structure_change(uint64_t ptr, RustBuffer relation, RustBuffer change
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_DATABASESESSION_CREATE_TABLE
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_DATABASESESSION_CREATE_TABLE
+uint64_t uniffi_tableport_core_fn_method_databasesession_create_table(uint64_t ptr, RustBuffer schema, RustBuffer name, RustBuffer columns
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_DATABASESESSION_STRUCTURE
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_METHOD_DATABASESESSION_STRUCTURE
 uint64_t uniffi_tableport_core_fn_method_databasesession_structure(uint64_t ptr, RustBuffer relation
@@ -463,6 +473,11 @@ RustBuffer uniffi_tableport_core_fn_func_changes_sql(RustBuffer changes, RustBuf
 RustBuffer uniffi_tableport_core_fn_func_insert_sql(RustBuffer row, RustBuffer relation, RustBuffer columns, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_RANK_NAMES
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_RANK_NAMES
+RustBuffer uniffi_tableport_core_fn_func_rank_names(RustBuffer query, RustBuffer names, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_ROWS_TO_CSV
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_ROWS_TO_CSV
 RustBuffer uniffi_tableport_core_fn_func_rows_to_csv(RustBuffer columns, RustBuffer rows, int8_t header, RustCallStatus *_Nonnull out_status
@@ -484,6 +499,31 @@ uint32_t uniffi_tableport_core_fn_func_grid_cell_limit(RustCallStatus *_Nonnull 
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_DROP_RELATION_SQL
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_DROP_RELATION_SQL
+RustBuffer uniffi_tableport_core_fn_func_drop_relation_sql(RustBuffer relation, int8_t cascade, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_DROP_ROUTINE_SQL
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_DROP_ROUTINE_SQL
+RustBuffer uniffi_tableport_core_fn_func_drop_routine_sql(RustBuffer routine, int8_t cascade, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_QUALIFIED_NAME
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_QUALIFIED_NAME
+RustBuffer uniffi_tableport_core_fn_func_qualified_name(RustBuffer relation, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_REFRESH_MATERIALIZED_VIEW_SQL
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_REFRESH_MATERIALIZED_VIEW_SQL
+RustBuffer uniffi_tableport_core_fn_func_refresh_materialized_view_sql(RustBuffer relation, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_TRUNCATE_SQL
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_TRUNCATE_SQL
+RustBuffer uniffi_tableport_core_fn_func_truncate_sql(RustBuffer relation, int8_t restart_identity, int8_t cascade, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_TEST_CONNECTION
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_TEST_CONNECTION
 uint64_t uniffi_tableport_core_fn_func_test_connection(RustBuffer settings
@@ -502,6 +542,16 @@ RustBuffer uniffi_tableport_core_fn_func_format_sql(RustBuffer sql, RustCallStat
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_STATEMENT_RANGE
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_STATEMENT_RANGE
 RustBuffer uniffi_tableport_core_fn_func_statement_range(RustBuffer sql, uint32_t cursor, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_CREATE_TABLE_SQL
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_CREATE_TABLE_SQL
+RustBuffer uniffi_tableport_core_fn_func_create_table_sql(RustBuffer schema, RustBuffer name, RustBuffer columns, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_STRUCTURE_CHANGE_SQL
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_STRUCTURE_CHANGE_SQL
+RustBuffer uniffi_tableport_core_fn_func_structure_change_sql(RustBuffer relation, RustBuffer change, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_PARSE_CONNECTION_URL
@@ -781,6 +831,12 @@ uint16_t uniffi_tableport_core_checksum_func_insert_sql(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_RANK_NAMES
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_RANK_NAMES
+uint16_t uniffi_tableport_core_checksum_func_rank_names(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_ROWS_TO_CSV
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_ROWS_TO_CSV
 uint16_t uniffi_tableport_core_checksum_func_rows_to_csv(void
@@ -805,6 +861,36 @@ uint16_t uniffi_tableport_core_checksum_func_grid_cell_limit(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_DROP_RELATION_SQL
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_DROP_RELATION_SQL
+uint16_t uniffi_tableport_core_checksum_func_drop_relation_sql(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_DROP_ROUTINE_SQL
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_DROP_ROUTINE_SQL
+uint16_t uniffi_tableport_core_checksum_func_drop_routine_sql(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_QUALIFIED_NAME
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_QUALIFIED_NAME
+uint16_t uniffi_tableport_core_checksum_func_qualified_name(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_REFRESH_MATERIALIZED_VIEW_SQL
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_REFRESH_MATERIALIZED_VIEW_SQL
+uint16_t uniffi_tableport_core_checksum_func_refresh_materialized_view_sql(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_TRUNCATE_SQL
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_TRUNCATE_SQL
+uint16_t uniffi_tableport_core_checksum_func_truncate_sql(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_TEST_CONNECTION
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_TEST_CONNECTION
 uint16_t uniffi_tableport_core_checksum_func_test_connection(void
@@ -826,6 +912,18 @@ uint16_t uniffi_tableport_core_checksum_func_format_sql(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_STATEMENT_RANGE
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_STATEMENT_RANGE
 uint16_t uniffi_tableport_core_checksum_func_statement_range(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_CREATE_TABLE_SQL
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_CREATE_TABLE_SQL
+uint16_t uniffi_tableport_core_checksum_func_create_table_sql(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_STRUCTURE_CHANGE_SQL
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_STRUCTURE_CHANGE_SQL
+uint16_t uniffi_tableport_core_checksum_func_structure_change_sql(void
     
 );
 #endif
@@ -982,6 +1080,18 @@ uint16_t uniffi_tableport_core_checksum_method_databasesession_server_version(vo
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_DATABASESESSION_SETTINGS
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_DATABASESESSION_SETTINGS
 uint16_t uniffi_tableport_core_checksum_method_databasesession_settings(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_DATABASESESSION_APPLY_STRUCTURE_CHANGE
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_DATABASESESSION_APPLY_STRUCTURE_CHANGE
+uint16_t uniffi_tableport_core_checksum_method_databasesession_apply_structure_change(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_DATABASESESSION_CREATE_TABLE
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_METHOD_DATABASESESSION_CREATE_TABLE
+uint16_t uniffi_tableport_core_checksum_method_databasesession_create_table(void
     
 );
 #endif

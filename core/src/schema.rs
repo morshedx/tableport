@@ -202,3 +202,53 @@ impl DatabaseSession {
             .ok_or_else(|| DatabaseError::new("The function no longer exists."))
     }
 }
+
+/// `"schema"."name"`, for copying or pasting into SQL.
+#[uniffi::export]
+pub fn qualified_name(relation: Relation) -> String {
+    relation.quoted_name()
+}
+
+/// `DROP TABLE|VIEW|MATERIALIZED VIEW|FOREIGN TABLE "schema"."name"`.
+#[uniffi::export]
+pub fn drop_relation_sql(relation: Relation, cascade: bool) -> String {
+    let kind = match relation.kind {
+        RelationKind::Table | RelationKind::PartitionedTable => "TABLE",
+        RelationKind::View => "VIEW",
+        RelationKind::MaterializedView => "MATERIALIZED VIEW",
+        RelationKind::ForeignTable => "FOREIGN TABLE",
+    };
+    format!("DROP {kind} {}{};", relation.quoted_name(), if cascade { " CASCADE" } else { "" })
+}
+
+/// `TRUNCATE "schema"."name"`; `restart_identity` resets its sequences.
+#[uniffi::export]
+pub fn truncate_sql(relation: Relation, restart_identity: bool, cascade: bool) -> String {
+    format!(
+        "TRUNCATE {}{}{};",
+        relation.quoted_name(),
+        if restart_identity { " RESTART IDENTITY" } else { "" },
+        if cascade { " CASCADE" } else { "" }
+    )
+}
+
+/// `REFRESH MATERIALIZED VIEW "schema"."name"`.
+#[uniffi::export]
+pub fn refresh_materialized_view_sql(relation: Relation) -> String {
+    format!("REFRESH MATERIALIZED VIEW {};", relation.quoted_name())
+}
+
+/// `DROP FUNCTION|PROCEDURE "schema"."name"(arguments)`. The arguments pick
+/// the one overload; their names, as pg_get_function_identity_arguments
+/// prints them, are accepted there.
+#[uniffi::export]
+pub fn drop_routine_sql(routine: Routine, cascade: bool) -> String {
+    format!(
+        "DROP {} {}.{}({}){};",
+        if routine.is_procedure { "PROCEDURE" } else { "FUNCTION" },
+        quote_identifier(&routine.schema),
+        quote_identifier(&routine.name),
+        routine.arguments,
+        if cascade { " CASCADE" } else { "" }
+    )
+}

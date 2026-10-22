@@ -78,3 +78,17 @@ async fn lists_routines_and_reads_definition() {
     )
     .await;
 }
+
+#[test]
+fn drop_and_truncate_sql() {
+    use tableport_core::{drop_relation_sql, drop_routine_sql, refresh_materialized_view_sql, truncate_sql, Routine};
+    let table = Relation { schema: "public".into(), name: r#"Odd "Name""#.into(), kind: RelationKind::Table };
+    assert_eq!(drop_relation_sql(table.clone(), false), r#"DROP TABLE "public"."Odd ""Name""";"#);
+    assert_eq!(drop_relation_sql(table.clone(), true), r#"DROP TABLE "public"."Odd ""Name""" CASCADE;"#);
+    assert_eq!(truncate_sql(table.clone(), true, true), r#"TRUNCATE "public"."Odd ""Name""" RESTART IDENTITY CASCADE;"#);
+    let view = Relation { schema: "s".into(), name: "v".into(), kind: RelationKind::MaterializedView };
+    assert_eq!(drop_relation_sql(view.clone(), false), r#"DROP MATERIALIZED VIEW "s"."v";"#);
+    assert_eq!(refresh_materialized_view_sql(view), r#"REFRESH MATERIALIZED VIEW "s"."v";"#);
+    let routine = Routine { oid: 1, schema: "public".into(), name: "score".into(), arguments: "a integer, b text".into(), is_procedure: false };
+    assert_eq!(drop_routine_sql(routine, false), r#"DROP FUNCTION "public"."score"(a integer, b text);"#);
+}

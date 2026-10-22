@@ -868,6 +868,19 @@ public protocol DatabaseSessionProtocol: AnyObject, Sendable {
     
     func settings()  -> ConnectionSettings
     
+    /**
+     * Runs a change's statements as one transaction: all of them or none.
+     * Sent as one message, they form one implicit transaction that Postgres
+     * rolls back on its own when a statement fails; an explicit BEGIN would
+     * leave the session in a failed transaction instead.
+     */
+    func applyStructureChange(relation: Relation, change: StructureChange) async throws 
+    
+    /**
+     * Creates the table and its column comments as one transaction.
+     */
+    func createTable(schema: String, name: String, columns: [NewTableColumn]) async throws 
+    
     func structure(relation: Relation) async throws  -> TableStructure
     
 }
@@ -1379,6 +1392,47 @@ open func settings() -> ConnectionSettings  {
 })
 }
     
+    /**
+     * Runs a change's statements as one transaction: all of them or none.
+     * Sent as one message, they form one implicit transaction that Postgres
+     * rolls back on its own when a statement fails; an explicit BEGIN would
+     * leave the session in a failed transaction instead.
+     */
+open func applyStructureChange(relation: Relation, change: StructureChange)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tableport_core_fn_method_databasesession_apply_structure_change(
+                        self.uniffiCloneHandle(),FfiConverterTypeRelation_lower(relation),FfiConverterTypeStructureChange_lower(change)
+                )
+            },
+            pollFunc: ffi_tableport_core_rust_future_poll_void,
+            completeFunc: ffi_tableport_core_rust_future_complete_void,
+            freeFunc: ffi_tableport_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeDatabaseError_lift
+        )
+}
+    
+    /**
+     * Creates the table and its column comments as one transaction.
+     */
+open func createTable(schema: String, name: String, columns: [NewTableColumn])async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tableport_core_fn_method_databasesession_create_table(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(schema),FfiConverterString.lower(name),FfiConverterSequenceTypeNewTableColumn.lower(columns)
+                )
+            },
+            pollFunc: ffi_tableport_core_rust_future_poll_void,
+            completeFunc: ffi_tableport_core_rust_future_complete_void,
+            freeFunc: ffi_tableport_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeDatabaseError_lift
+        )
+}
+    
 open func structure(relation: Relation)async throws  -> TableStructure  {
     return
         try  await uniffiRustCallAsync(
@@ -1853,6 +1907,76 @@ public func FfiConverterTypeColumnDetail_lift(_ buf: RustBuffer) throws -> Colum
 #endif
 public func FfiConverterTypeColumnDetail_lower(_ value: ColumnDetail) -> RustBuffer {
     return FfiConverterTypeColumnDetail.lower(value)
+}
+
+
+/**
+ * A column as the user describes it in the Structure view. `column_type`
+ * and `default_value` are SQL as typed (`varchar(255)`, `now()`).
+ */
+public struct ColumnSpec: Equatable, Hashable {
+    public var name: String
+    public var columnType: String
+    public var nullable: Bool
+    public var defaultValue: String?
+    public var comment: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String, columnType: String, nullable: Bool, defaultValue: String?, comment: String?) {
+        self.name = name
+        self.columnType = columnType
+        self.nullable = nullable
+        self.defaultValue = defaultValue
+        self.comment = comment
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ColumnSpec: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeColumnSpec: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ColumnSpec {
+        return
+            try ColumnSpec(
+                name: FfiConverterString.read(from: &buf), 
+                columnType: FfiConverterString.read(from: &buf), 
+                nullable: FfiConverterBool.read(from: &buf), 
+                defaultValue: FfiConverterOptionString.read(from: &buf), 
+                comment: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ColumnSpec, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.columnType, into: &buf)
+        FfiConverterBool.write(value.nullable, into: &buf)
+        FfiConverterOptionString.write(value.defaultValue, into: &buf)
+        FfiConverterOptionString.write(value.comment, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeColumnSpec_lift(_ buf: RustBuffer) throws -> ColumnSpec {
+    return try FfiConverterTypeColumnSpec.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeColumnSpec_lower(_ value: ColumnSpec) -> RustBuffer {
+    return FfiConverterTypeColumnSpec.lower(value)
 }
 
 
@@ -2424,6 +2548,69 @@ public func FfiConverterTypeNewRow_lift(_ buf: RustBuffer) throws -> NewRow {
 #endif
 public func FfiConverterTypeNewRow_lower(_ value: NewRow) -> RustBuffer {
     return FfiConverterTypeNewRow.lower(value)
+}
+
+
+/**
+ * One column of a table being created.
+ */
+public struct NewTableColumn: Equatable, Hashable {
+    public var column: ColumnSpec
+    /**
+     * Part of the primary key; several columns make a composite key.
+     */
+    public var primaryKey: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(column: ColumnSpec, 
+        /**
+         * Part of the primary key; several columns make a composite key.
+         */primaryKey: Bool) {
+        self.column = column
+        self.primaryKey = primaryKey
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension NewTableColumn: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNewTableColumn: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NewTableColumn {
+        return
+            try NewTableColumn(
+                column: FfiConverterTypeColumnSpec.read(from: &buf), 
+                primaryKey: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NewTableColumn, into buf: inout [UInt8]) {
+        FfiConverterTypeColumnSpec.write(value.column, into: &buf)
+        FfiConverterBool.write(value.primaryKey, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNewTableColumn_lift(_ buf: RustBuffer) throws -> NewTableColumn {
+    return try FfiConverterTypeNewTableColumn.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNewTableColumn_lower(_ value: NewTableColumn) -> RustBuffer {
+    return FfiConverterTypeNewTableColumn.lower(value)
 }
 
 
@@ -4606,6 +4793,147 @@ public func FfiConverterTypeSqlFunction_lower(_ value: SqlFunction) -> RustBuffe
 
 
 /**
+ * One change to a table's structure, made from the Structure view.
+ */
+
+public enum StructureChange: Equatable, Hashable {
+    
+    case addColumn(column: ColumnSpec
+    )
+    /**
+     * Only what differs between `original` and `column` is changed.
+     */
+    case editColumn(original: ColumnDetail, column: ColumnSpec
+    )
+    case dropColumn(name: String, cascade: Bool
+    )
+    case addIndex(name: String, columns: [String], unique: Bool
+    )
+    case dropIndex(name: String, cascade: Bool
+    )
+    case addForeignKey(name: String?, column: String, referenced: Relation, referencedColumn: String, 
+        /**
+         * `CASCADE`, `SET NULL`, `RESTRICT`… ; None for the default, NO ACTION.
+         */onDelete: String?
+    )
+    case dropConstraint(name: String, cascade: Bool
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension StructureChange: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeStructureChange: FfiConverterRustBuffer {
+    typealias SwiftType = StructureChange
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> StructureChange {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .addColumn(column: try FfiConverterTypeColumnSpec.read(from: &buf)
+        )
+        
+        case 2: return .editColumn(original: try FfiConverterTypeColumnDetail.read(from: &buf), column: try FfiConverterTypeColumnSpec.read(from: &buf)
+        )
+        
+        case 3: return .dropColumn(name: try FfiConverterString.read(from: &buf), cascade: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 4: return .addIndex(name: try FfiConverterString.read(from: &buf), columns: try FfiConverterSequenceString.read(from: &buf), unique: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 5: return .dropIndex(name: try FfiConverterString.read(from: &buf), cascade: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 6: return .addForeignKey(name: try FfiConverterOptionString.read(from: &buf), column: try FfiConverterString.read(from: &buf), referenced: try FfiConverterTypeRelation.read(from: &buf), referencedColumn: try FfiConverterString.read(from: &buf), onDelete: try FfiConverterOptionString.read(from: &buf)
+        )
+        
+        case 7: return .dropConstraint(name: try FfiConverterString.read(from: &buf), cascade: try FfiConverterBool.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: StructureChange, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .addColumn(column):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeColumnSpec.write(column, into: &buf)
+            
+        
+        case let .editColumn(original,column):
+            writeInt(&buf, Int32(2))
+            FfiConverterTypeColumnDetail.write(original, into: &buf)
+            FfiConverterTypeColumnSpec.write(column, into: &buf)
+            
+        
+        case let .dropColumn(name,cascade):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(name, into: &buf)
+            FfiConverterBool.write(cascade, into: &buf)
+            
+        
+        case let .addIndex(name,columns,unique):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(name, into: &buf)
+            FfiConverterSequenceString.write(columns, into: &buf)
+            FfiConverterBool.write(unique, into: &buf)
+            
+        
+        case let .dropIndex(name,cascade):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(name, into: &buf)
+            FfiConverterBool.write(cascade, into: &buf)
+            
+        
+        case let .addForeignKey(name,column,referenced,referencedColumn,onDelete):
+            writeInt(&buf, Int32(6))
+            FfiConverterOptionString.write(name, into: &buf)
+            FfiConverterString.write(column, into: &buf)
+            FfiConverterTypeRelation.write(referenced, into: &buf)
+            FfiConverterString.write(referencedColumn, into: &buf)
+            FfiConverterOptionString.write(onDelete, into: &buf)
+            
+        
+        case let .dropConstraint(name,cascade):
+            writeInt(&buf, Int32(7))
+            FfiConverterString.write(name, into: &buf)
+            FfiConverterBool.write(cascade, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStructureChange_lift(_ buf: RustBuffer) throws -> StructureChange {
+    return try FfiConverterTypeStructureChange.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStructureChange_lower(_ value: StructureChange) -> RustBuffer {
+    return FfiConverterTypeStructureChange.lower(value)
+}
+
+
+
+/**
  * How the connection uses TLS, with libpq's `sslmode` meanings.
  */
 
@@ -4918,6 +5246,31 @@ fileprivate struct FfiConverterOptionTypeTlsMode: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceUInt32: FfiConverterRustBuffer {
+    typealias SwiftType = [UInt32]
+
+    public static func write(_ value: [UInt32], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterUInt32.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UInt32] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UInt32]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterUInt32.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceUInt64: FfiConverterRustBuffer {
     typealias SwiftType = [UInt64]
 
@@ -5185,6 +5538,31 @@ fileprivate struct FfiConverterSequenceTypeNewRow: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeNewRow.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeNewTableColumn: FfiConverterRustBuffer {
+    typealias SwiftType = [NewTableColumn]
+
+    public static func write(_ value: [NewTableColumn], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeNewTableColumn.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [NewTableColumn] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [NewTableColumn]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeNewTableColumn.read(from: &buf))
         }
         return seq
     }
@@ -5543,6 +5921,21 @@ public func insertSql(row: NewRow, relation: Relation, columns: [Column])throws 
 })
 }
 /**
+ * Quick open (⌘P): the indexes of `names` that match `query`, best first.
+ * A prefix beats a word start (`it` in order_items), which beats any
+ * substring, which beats letters in order with gaps; shorter names win a
+ * tie. Case is ignored. An empty query keeps every name, in order.
+ */
+public func rankNames(query: String, names: [String]) -> [UInt32]  {
+    return try!  FfiConverterSequenceUInt32.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_func_rank_names(
+        FfiConverterString.lower(query),
+        FfiConverterSequenceString.lower(names),uniffiCallStatus
+    )
+})
+}
+/**
  * Rows as CSV, for the clipboard: RFC 4180 quoting, NULL as an empty field,
  * lines ended with \n.
  */
@@ -5590,6 +5983,67 @@ public func gridCellLimit() -> UInt32  {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_tableport_core_fn_func_grid_cell_limit(uniffiCallStatus
+    )
+})
+}
+/**
+ * `DROP TABLE|VIEW|MATERIALIZED VIEW|FOREIGN TABLE "schema"."name"`.
+ */
+public func dropRelationSql(relation: Relation, cascade: Bool) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_func_drop_relation_sql(
+        FfiConverterTypeRelation_lower(relation),
+        FfiConverterBool.lower(cascade),uniffiCallStatus
+    )
+})
+}
+/**
+ * `DROP FUNCTION|PROCEDURE "schema"."name"(arguments)`. The arguments pick
+ * the one overload; their names, as pg_get_function_identity_arguments
+ * prints them, are accepted there.
+ */
+public func dropRoutineSql(routine: Routine, cascade: Bool) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_func_drop_routine_sql(
+        FfiConverterTypeRoutine_lower(routine),
+        FfiConverterBool.lower(cascade),uniffiCallStatus
+    )
+})
+}
+/**
+ * `"schema"."name"`, for copying or pasting into SQL.
+ */
+public func qualifiedName(relation: Relation) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_func_qualified_name(
+        FfiConverterTypeRelation_lower(relation),uniffiCallStatus
+    )
+})
+}
+/**
+ * `REFRESH MATERIALIZED VIEW "schema"."name"`.
+ */
+public func refreshMaterializedViewSql(relation: Relation) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_func_refresh_materialized_view_sql(
+        FfiConverterTypeRelation_lower(relation),uniffiCallStatus
+    )
+})
+}
+/**
+ * `TRUNCATE "schema"."name"`; `restart_identity` resets its sequences.
+ */
+public func truncateSql(relation: Relation, restartIdentity: Bool, cascade: Bool) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_func_truncate_sql(
+        FfiConverterTypeRelation_lower(relation),
+        FfiConverterBool.lower(restartIdentity),
+        FfiConverterBool.lower(cascade),uniffiCallStatus
     )
 })
 }
@@ -5651,6 +6105,33 @@ public func statementRange(sql: String, cursor: UInt32) -> TextRange?  {
 })
 }
 /**
+ * `CREATE TABLE`, then a `COMMENT ON COLUMN` for each comment. Run together
+ * by [`DatabaseSession::create_table`], in one transaction.
+ */
+public func createTableSql(schema: String, name: String, columns: [NewTableColumn])throws  -> [String]  {
+    return try  FfiConverterSequenceString.lift(try rustCallWithError(FfiConverterTypeDatabaseError_lift) {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_func_create_table_sql(
+        FfiConverterString.lower(schema),
+        FfiConverterString.lower(name),
+        FfiConverterSequenceTypeNewTableColumn.lower(columns),uniffiCallStatus
+    )
+})
+}
+/**
+ * The statements that make `change` on `relation`, in order. They are run
+ * together, in one transaction, by [`DatabaseSession::apply_structure_change`].
+ */
+public func structureChangeSql(relation: Relation, change: StructureChange)throws  -> [String]  {
+    return try  FfiConverterSequenceString.lift(try rustCallWithError(FfiConverterTypeDatabaseError_lift) {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_func_structure_change_sql(
+        FfiConverterTypeRelation_lower(relation),
+        FfiConverterTypeStructureChange_lower(change),uniffiCallStatus
+    )
+})
+}
+/**
  * Reads `postgres://user:password@host:port/database?sslmode=…`, also with
  * `postgresql://` and percent-encoded parts, as libpq does.
  *
@@ -5689,6 +6170,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tableport_core_checksum_func_insert_sql() != 35229) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_tableport_core_checksum_func_rank_names() != 44927) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_tableport_core_checksum_func_rows_to_csv() != 1745) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5701,6 +6185,21 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tableport_core_checksum_func_grid_cell_limit() != 9110) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_tableport_core_checksum_func_drop_relation_sql() != 59614) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_func_drop_routine_sql() != 9876) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_func_qualified_name() != 45469) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_func_refresh_materialized_view_sql() != 42390) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_func_truncate_sql() != 29929) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_tableport_core_checksum_func_test_connection() != 15594) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5711,6 +6210,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_func_statement_range() != 4856) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_func_create_table_sql() != 15145) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_func_structure_change_sql() != 56182) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_func_parse_connection_url() != 3082) {
@@ -5789,6 +6294,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_method_databasesession_settings() != 13942) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_method_databasesession_apply_structure_change() != 18105) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_method_databasesession_create_table() != 31369) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_method_databasesession_structure() != 49366) {

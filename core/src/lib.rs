@@ -20,14 +20,20 @@ mod structure;
 mod url;
 
 pub use changes::{changes_sql, insert_sql, CellDraft, NewRow, PendingChanges, RowUpdate, SqlFunction};
-pub use completion::{Completer, CompletionItem, CompletionKind, Completions, KeywordCase};
+pub use completion::{rank_names, Completer, CompletionItem, CompletionKind, Completions, KeywordCase};
 pub use error::DatabaseError;
 pub use export::{rows_to_csv, rows_to_insert_sql, rows_to_json, ExportFormat, ExportScope};
 pub use query::{QueryResult, ResultSet};
 pub use rows::{grid_cell_limit, Column, ColumnKind, FilterOperator, FilterTarget, RowFilter, RowPage, RowSort, GRID_CELL_LIMIT};
-pub use schema::{ForeignKey, Relation, RelationKind, Routine, SchemaContents};
+pub use schema::{
+    drop_relation_sql, drop_routine_sql, qualified_name, refresh_materialized_view_sql, truncate_sql, ForeignKey, Relation,
+    RelationKind, Routine, SchemaContents,
+};
 pub use url::{parse_connection_url, ParsedUrl};
-pub use structure::{ColumnDetail, ConstraintDetail, ConstraintKind, IndexDetail, TableStructure};
+pub use structure::{
+    create_table_sql, structure_change_sql, ColumnDetail, ColumnSpec, ConstraintDetail, ConstraintKind, IndexDetail, NewTableColumn,
+    StructureChange, TableStructure,
+};
 pub use sql_text::{format_json, format_sql, statement_range, TextRange};
 pub use ssh::SshSettings;
 pub use store::{HistoryEntry, LocalStore, SavedQuery};
