@@ -153,6 +153,11 @@ final class WorkspaceModel: ObservableObject {
             let host = settings.host.contains("://") ? SavedConnection.displayHost(of: settings.host) : "\(settings.host):\(settings.port)"
             return settings.database.isEmpty ? host : "\(host)/\(settings.database)"
         }
+        if settings.engine == .oracle {
+            // A connect descriptor shows its host only.
+            let host = settings.host.hasPrefix("(") ? SavedConnection.displayHost(of: settings.host) : "\(settings.host):\(settings.port)/\(settings.database)"
+            return "\(settings.user)@\(host)"
+        }
         if settings.engine == .cassandra {
             let user = settings.user.isEmpty ? "" : "\(settings.user)@"
             return "\(user)\(settings.host):\(settings.port)\(settings.database.isEmpty ? "" : "/\(settings.database)")"

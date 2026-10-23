@@ -75,6 +75,8 @@ impl DatabaseSession {
             Dialect::Sqlite => return Ok(vec![self.settings().database]),
             Dialect::Mysql => return Ok(self.mysql_schemas().await?.into_iter().map(|schema| schema.name).collect()),
             Dialect::Mssql => return self.mssql_databases().await,
+            // A connection is to one service; another is another connection.
+            Dialect::Oracle => return Ok(vec![self.settings().database]),
             Dialect::Postgres => {}
         }
         let rows = self
@@ -98,6 +100,7 @@ impl DatabaseSession {
             Dialect::Sqlite => return self.sqlite_schemas().await,
             Dialect::Mysql => return self.mysql_schemas().await,
             Dialect::Mssql => return self.mssql_schemas().await,
+            Dialect::Oracle => return self.oracle_schemas().await,
             Dialect::Postgres => {}
         }
         let schema_rows = self
@@ -150,6 +153,7 @@ impl DatabaseSession {
             Dialect::Sqlite => return self.sqlite_primary_key(&relation).await,
             Dialect::Mysql => return self.mysql_primary_key(&relation).await,
             Dialect::Mssql => return self.mssql_primary_key(&relation).await,
+            Dialect::Oracle => return self.oracle_primary_key(&relation).await,
             Dialect::Postgres => {}
         }
         let rows = self
@@ -176,6 +180,7 @@ impl DatabaseSession {
             Dialect::Sqlite => return self.sqlite_foreign_keys(&relation).await,
             Dialect::Mysql => return self.mysql_foreign_keys(&relation).await,
             Dialect::Mssql => return self.mssql_foreign_keys(&relation).await,
+            Dialect::Oracle => return self.oracle_foreign_keys(&relation).await,
             Dialect::Postgres => {}
         }
         let rows = self
@@ -279,6 +284,14 @@ pub fn drop_relation_sql(relation: Relation, cascade: bool, engine: crate::Engin
     if engine == crate::Engine::Mongo {
         return crate::mongo::shell_command(&relation, "drop()");
     }
+    // Oracle drops the other tables' foreign keys with CASCADE CONSTRAINTS.
+    if engine == crate::Engine::Oracle {
+        return match relation.kind {
+            RelationKind::View => format!("DROP VIEW {};", relation.quoted_name()),
+            RelationKind::MaterializedView => format!("DROP MATERIALIZED VIEW {};", relation.quoted_name()),
+            _ => format!("DROP TABLE {}{};", relation.quoted_name(), if cascade { " CASCADE CONSTRAINTS" } else { "" }),
+        };
+    }
     // SQLite has no CASCADE: foreign keys decide what happens to other rows.
     let cascade = cascade && engine == crate::Engine::Postgres;
     let kind = match relation.kind {
@@ -300,7 +313,7 @@ pub fn truncate_sql(relation: Relation, restart_identity: bool, cascade: bool, e
         crate::Engine::Mongo => return crate::mongo::shell_command(&relation, "deleteMany({})"),
         crate::Engine::Sqlite | crate::Engine::Libsql => return format!("DELETE FROM {};", relation.quoted_name()),
         // TRUNCATE restarts AUTO_INCREMENT and IDENTITY on its own, and has no CASCADE.
-        crate::Engine::Mysql | crate::Engine::Mssql => return format!("TRUNCATE TABLE {};", relation.quoted_name()),
+        crate::Engine::Mysql | crate::Engine::Mssql | crate::Engine::Oracle => return format!("TRUNCATE TABLE {};", relation.quoted_name()),
         crate::Engine::Cassandra => return format!("TRUNCATE {};", relation.quoted_name()),
         crate::Engine::Postgres | crate::Engine::Redis => {}
     }

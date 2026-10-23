@@ -57,6 +57,7 @@ impl DatabaseSession {
             Engine::Mysql => return self.mysql_structure(&relation).await,
             Engine::Mssql => return self.mssql_structure(&relation).await,
             Engine::Cassandra => return self.cassandra_structure(&relation).await,
+            Engine::Oracle => return self.oracle_structure(&relation).await,
             Engine::Redis => return Err(DatabaseError::new("Redis keys have no table structure.")),
             Engine::Mongo => return self.mongo_structure(relation).await,
             Engine::Postgres => {}
@@ -194,6 +195,7 @@ pub fn structure_change_sql(relation: Relation, change: StructureChange, engine:
         Engine::Mssql => return crate::mssql::structure_change_sql(&relation, &change, &Default::default()),
         // Without the table's key; the session's version reads it.
         Engine::Cassandra => return crate::cassandra::structure_change_cql(&relation, &change, &[]),
+        Engine::Oracle => return crate::oracle::structure_change_sql(&relation, &change, &Default::default()),
         Engine::Redis => return Err(DatabaseError::new("Redis keys have no table structure.")),
         Engine::Mongo => return crate::mongo::structure_change_commands(&relation, &change),
         Engine::Postgres => {}
@@ -331,6 +333,9 @@ impl DatabaseSession {
         if self.engine() == Engine::Cassandra {
             return self.cassandra_apply_structure(relation, change).await;
         }
+        if self.engine() == Engine::Oracle {
+            return self.oracle_apply_structure(relation, change).await;
+        }
         if let Some(link) = self.mysql() {
             // MySQL commits each DDL statement on its own; most changes are one statement.
             let statements = self.structure_change_statements(relation, change).await?;
@@ -375,6 +380,9 @@ impl DatabaseSession {
         }
         if self.engine() == Engine::Cassandra {
             return self.cassandra_structure_change_cql(&relation, change).await;
+        }
+        if self.engine() == Engine::Oracle {
+            return self.oracle_structure_change_sql(&relation, change).await;
         }
         structure_change_sql(relation, change, self.engine())
     }
@@ -433,20 +441,27 @@ pub fn create_table_sql(schema: String, name: String, columns: Vec<NewTableColum
         }
         let quoted = quote_identifier(column_name);
         let mut definition = format!("  {quoted} {column_type}");
+        let default = match non_empty(&column.default_value) {
+            // MySQL numbers rows with a column attribute, not a default.
+            Some("AUTO_INCREMENT") if engine == Engine::Mysql => " AUTO_INCREMENT".to_string(),
+            // SQL Server numbers rows with IDENTITY(seed, step), also not a default.
+            Some(identity) if engine == Engine::Mssql && identity.to_ascii_uppercase().starts_with("IDENTITY") => format!(" {identity}"),
+            // Oracle's identity is written as it is: GENERATED … AS IDENTITY.
+            Some(generated) if engine == Engine::Oracle && generated.starts_with("GENERATED ") => format!(" {generated}"),
+            Some(default) => format!(" DEFAULT {default}"),
+            None => String::new(),
+        };
+        // Oracle wants the default before NOT NULL; the others after.
+        if engine == Engine::Oracle {
+            definition += &default;
+        }
         // Key columns are NOT NULL anyway; saying it again would be noise.
         // CQL has no NOT NULL: only key columns must have a value.
         if !column.nullable && !entry.primary_key && engine != Engine::Cassandra {
             definition += " NOT NULL";
         }
-        match non_empty(&column.default_value) {
-            // MySQL numbers rows with a column attribute, not a default.
-            Some("AUTO_INCREMENT") if engine == Engine::Mysql => definition += " AUTO_INCREMENT",
-            // SQL Server numbers rows with IDENTITY(seed, step), also not a default.
-            Some(identity) if engine == Engine::Mssql && identity.to_ascii_uppercase().starts_with("IDENTITY") => {
-                definition += &format!(" {identity}")
-            }
-            Some(default) => definition += &format!(" DEFAULT {default}"),
-            None => {}
+        if engine != Engine::Oracle {
+            definition += &default;
         }
         // MySQL keeps a column's comment in its definition.
         if let (Engine::Mysql, Some(comment)) = (engine, non_empty(&column.comment)) {

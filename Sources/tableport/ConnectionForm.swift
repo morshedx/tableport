@@ -36,6 +36,7 @@ struct ConnectionForm: View {
     @State private var sshPassphrase = ""
     @State private var trustedFingerprint: String?
 
+    @AppStorage(OracleClient.directoryKey) private var oracleClientDirectory = ""
     @State private var url = ""
     @State private var urlError: String?
     @State private var testState: TestState = .idle
@@ -96,7 +97,11 @@ struct ConnectionForm: View {
     }
 
     /// A MongoDB connection string names its own hosts and ports.
-    private var isConnectionString: Bool { engine == .mongo && host.contains("://") }
+    /// A MongoDB connection string or an Oracle connect descriptor names its
+    /// own hosts and ports, and an Oracle descriptor its service.
+    private var isConnectionString: Bool {
+        (engine == .mongo && host.contains("://")) || (engine == .oracle && trimmed(host).hasPrefix("("))
+    }
 
     private var serverPort: Int? { isConnectionString ? 0 : number(port) }
 
@@ -107,7 +112,7 @@ struct ConnectionForm: View {
     private var isServerComplete: Bool {
         if engine.isSqlite { return !trimmed(database).isEmpty }
         // MySQL shows every database of the server; naming one is optional.
-        let hasDatabase = fields.databaseIsOptional || !trimmed(database).isEmpty
+        let hasDatabase = fields.databaseIsOptional || isConnectionString || !trimmed(database).isEmpty
         // Redis logs in as its default user, and MongoDB may need no login.
         let hasUser = fields.userIsOptional || !trimmed(user).isEmpty
         return !trimmed(host).isEmpty && hasDatabase && hasUser && serverPort != nil
@@ -122,12 +127,14 @@ struct ConnectionForm: View {
 
     private enum FormTab: String, CaseIterable {
         case connection = "Connection"
+        /// Oracle only: the folder of Oracle's client library.
+        case client = "Instant Client"
         case ssh = "SSH Tunnel"
         case access = "AI Access"
 
-        /// The first tab holds everything a connection needs; the others
-        /// are extras.
-        var isOptional: Bool { self != .connection }
+        /// Connection (and Oracle's Instant Client) hold what a connection
+        /// needs; the others are extras.
+        var isOptional: Bool { self == .ssh || self == .access }
     }
 
     var body: some View {
@@ -144,6 +151,7 @@ struct ConnectionForm: View {
                 Group {
                     switch tab {
                     case .connection: connectionTab
+                    case .client: OracleClientCard()
                     case .ssh: sshTab
                     case .access: accessTab
                     }
@@ -200,9 +208,11 @@ struct ConnectionForm: View {
         .background(Theme.hairline, in: RoundedRectangle(cornerRadius: 8))
     }
 
-    /// A file needs no SSH tunnel.
+    /// A file needs no SSH tunnel; only Oracle needs a client library.
     private var tabs: [FormTab] {
-        engine.isSqlite ? [.connection, .access] : FormTab.allCases
+        if engine.isSqlite { return [.connection, .access] }
+        if engine == .oracle { return [.connection, .client, .ssh, .access] }
+        return [.connection, .ssh, .access]
     }
 
     private func dot(for tab: FormTab) -> Color? {
@@ -214,6 +224,8 @@ struct ConnectionForm: View {
             return isSSHComplete ? Theme.accent : Theme.Tile.orange
         case .access:
             return aiAccess ? Theme.accent : nil
+        case .client:
+            return oracleClientDirectory.isEmpty ? Theme.Tile.orange : nil
         }
     }
 
@@ -222,7 +234,7 @@ struct ConnectionForm: View {
         switch engine {
         case .sqlite: sqliteTab
         case .libsql: libsqlTab
-        case .postgres, .mysql, .redis, .mongo, .mssql, .cassandra: serverTab
+        case .postgres, .mysql, .redis, .mongo, .mssql, .cassandra, .oracle: serverTab
         }
     }
 
@@ -427,7 +439,7 @@ struct ConnectionForm: View {
             }
             if isNew {
                 Picker("Database", selection: $engine) {
-                    ForEach([Engine.postgres, .mysql, .mssql, .sqlite, .libsql, .redis, .mongo, .cassandra], id: \.self) { engine in
+                    ForEach([Engine.postgres, .mysql, .mssql, .oracle, .sqlite, .libsql, .redis, .mongo, .cassandra], id: \.self) { engine in
                         Text(engine == .mysql ? "MySQL / MariaDB" : engine == .libsql ? "libSQL / Turso" : engine.label).tag(engine)
                     }
                 }
@@ -450,6 +462,7 @@ struct ConnectionForm: View {
         case .mongo: ("27017", "", "")
         case .mssql: ("1433", "sa", "")
         case .cassandra: ("9042", "", "")
+        case .oracle: ("1521", "system", "FREEPDB1")
         case .sqlite, .libsql: ("", "", "")
         }
     }
@@ -460,6 +473,7 @@ struct ConnectionForm: View {
         testState = .idle
         let before = Self.defaults(old)
         let after = Self.defaults(engine)
+        if !tabs.contains(tab) { tab = .connection }
         if engine.isSqlite {
             if host == "localhost" { host = "" }
             if tab == .ssh { tab = .connection }
@@ -493,6 +507,11 @@ struct ConnectionForm: View {
         if engine == .redis {
             let user = trimmed(self.user).isEmpty ? "" : "\(trimmed(self.user))@"
             return "Redis · \(user)\(host):\(port)/\(trimmed(database).isEmpty ? "0" : trimmed(database))"
+        }
+        if engine == .oracle {
+            // A connect descriptor shows its host only.
+            let shown = isConnectionString ? SavedConnection.displayHost(of: host) : "\(host):\(port)/\(trimmed(database))"
+            return "Oracle · \(trimmed(user))@\(shown)"
         }
         if engine == .cassandra {
             let user = trimmed(self.user).isEmpty ? "" : "\(trimmed(self.user))@"
@@ -660,7 +679,7 @@ struct ConnectionForm: View {
                   // "SQL Server 2022 (16.0.4135.4)" → "2022"; "Azure SQL 12.0.2000.8" → "Azure SQL".
                   : engine == .mssql ? "Connected · \(version.hasPrefix("Azure") ? "Azure SQL" : version.split(separator: " ").dropFirst(2).first.map(String.init) ?? version)"
                   // "MySQL 8.4.13" → "8.4.13"; the server's name is in the header.
-                  : engine == .mysql || engine == .libsql || engine == .redis || engine == .mongo || engine == .cassandra ? "Connected · \(version.split(separator: " ").last.map(String.init) ?? version)"
+                  : engine == .mysql || engine == .libsql || engine == .redis || engine == .mongo || engine == .cassandra || engine == .oracle ? "Connected · \(version.split(separator: " ").last.map(String.init) ?? version)"
                   : "Connected · \(version.split(separator: " ").first.map(String.init) ?? version)",
                   systemImage: "checkmark.circle.fill")
                 .help(engine == .postgres ? "PostgreSQL \(version)" : version)
@@ -1113,6 +1132,11 @@ private struct EngineFields {
         case .mongo:
             EngineFields(databasePrompt: "optional: every database is shown", urlPrompt: "Paste a mongodb:// URL to fill the form",
                          offersEveryDatabase: true)
+        case .oracle:
+            // No URL format: a whole connect descriptor goes in Host instead.
+            EngineFields(databaseLabel: "Service", databasePrompt: "FREEPDB1", databaseIsOptional: false, userPrompt: "system",
+                         userIsOptional: false,
+                         readOnlyHint: "Browse and query, never change data. Queries run in read-only transactions; TablePort refuses other statements.")
         case .cassandra:
             // CQL has no URL, no read-only session and no transactions.
             EngineFields(databaseLabel: "Keyspace", databasePrompt: "optional: every keyspace is shown",
@@ -1123,5 +1147,76 @@ private struct EngineFields {
             // Their own tabs, without server fields or a URL bar.
             EngineFields(databaseIsOptional: false)
         }
+    }
+}
+
+/// Oracle needs Oracle's own client library, which users install
+/// themselves: TablePort loads it from the folder chosen here, once per
+/// launch, and remembers the folder for later launches.
+struct OracleClientCard: View {
+    @AppStorage(OracleClient.directoryKey) private var directory = ""
+    @State private var status: Result<String, Error>?
+
+    var body: some View {
+        FormCard("Oracle Instant Client") {
+            FormRow("Folder") {
+                HStack(spacing: 6) {
+                    Text(directory.isEmpty ? "Not chosen" : (directory as NSString).abbreviatingWithTildeInPath)
+                        .foregroundStyle(directory.isEmpty ? Theme.inkSecondary : Theme.ink)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Choose…", action: choose)
+                }
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                switch status {
+                case .success(let version):
+                    Label("Instant Client \(version) is loaded.", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(Theme.success)
+                case .failure(let error):
+                    Label(error.displayMessage, systemImage: "xmark.circle.fill")
+                        .foregroundStyle(Theme.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                case nil:
+                    Text("TablePort talks to Oracle through Oracle's Instant Client. Download the Basic or Basic Light package for macOS, unpack it, and choose its folder. TablePort remembers it for every Oracle connection.")
+                        .foregroundStyle(Theme.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Link("Instant Client downloads on oracle.com", destination: URL(string: "https://www.oracle.com/database/technologies/instant-client/downloads.html")!)
+                }
+            }
+            .font(Theme.meta)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+        }
+        .onAppear { if !directory.isEmpty { status = OracleClient.load(directory) } }
+    }
+
+    private func choose() {
+        let panel = NSOpenPanel()
+        panel.message = "Choose the Instant Client folder (it holds libclntsh.dylib)"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        if panel.runModal() == .OK, let url = panel.url {
+            directory = url.path
+            status = OracleClient.load(url.path)
+        }
+    }
+}
+
+/// Loads Instant Client for the core; loading again is harmless.
+enum OracleClient {
+    static let directoryKey = "oracleClientDirectory"
+
+    @discardableResult
+    static func load(_ directory: String) -> Result<String, Error> {
+        Result { try loadOracleClient(directory: directory) }
+    }
+
+    /// At launch, the folder chosen before, so Oracle connections open at once.
+    static func loadSaved() {
+        guard let directory = UserDefaults.standard.string(forKey: directoryKey), !directory.isEmpty else { return }
+        load(directory)
     }
 }

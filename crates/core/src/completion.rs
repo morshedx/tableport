@@ -80,6 +80,7 @@ impl DatabaseSession {
             crate::Engine::Mysql => return self.mysql_completer().await,
             crate::Engine::Mssql => return self.mssql_completer().await,
             crate::Engine::Cassandra => return self.cassandra_completer().await,
+            crate::Engine::Oracle => return self.oracle_completer().await,
             crate::Engine::Redis | crate::Engine::Mongo => return Err(DatabaseError::new("This connection has no SQL to complete.")),
             crate::Engine::Postgres => {}
         }
@@ -406,6 +407,49 @@ impl DatabaseSession {
         let functions = crate::cassandra::FUNCTIONS.iter().map(|name| (String::new(), name.to_string())).collect();
         let mut search_path = vec![String::new()];
         search_path.extend(Some(self.settings().database.trim().to_string()).filter(|keyspace| !keyspace.is_empty()));
+        Ok(Arc::new(Completer {
+            relations,
+            functions,
+            schemas: schemas.into_iter().map(|schema| schema.name).collect(),
+            search_path,
+            backticks: false,
+        }))
+    }
+}
+
+impl DatabaseSession {
+    /// The visible schemas' tables and views with their columns. The
+    /// login's own schema is searched for unqualified names.
+    async fn oracle_completer(&self) -> Result<Arc<Completer>, DatabaseError> {
+        let schemas = self.schemas().await?;
+        let owners = schemas.iter().map(|schema| crate::rows::quote_literal(&schema.name)).collect::<Result<Vec<_>, _>>()?;
+        let mut columns: std::collections::HashMap<(String, String), Vec<String>> = std::collections::HashMap::new();
+        if !owners.is_empty() {
+            let rows = self
+                .text_rows(format!(
+                    "SELECT owner, table_name, column_name FROM all_tab_columns WHERE owner IN ({}) ORDER BY owner, table_name, column_id",
+                    owners.join(", ")
+                ))
+                .await?;
+            for row in rows {
+                let [Some(schema), Some(table), Some(column)] = <[Option<String>; 3]>::try_from(row).unwrap_or_default() else { continue };
+                columns.entry((schema, table)).or_default().push(column);
+            }
+        }
+        let mut relations: Vec<CatalogRelation> = schemas
+            .iter()
+            .flat_map(|schema| schema.relations.iter())
+            .map(|relation| CatalogRelation {
+                schema: relation.schema.clone(),
+                name: relation.name.clone(),
+                kind: relation.kind,
+                columns: columns.remove(&(relation.schema.clone(), relation.name.clone())).unwrap_or_default(),
+            })
+            .collect();
+        relations.sort_by(|a, b| a.name.cmp(&b.name));
+        let functions = crate::oracle::FUNCTIONS.iter().map(|name| (String::new(), name.to_string())).collect();
+        let mut search_path = vec![String::new()];
+        search_path.extend(self.oracle().map(|link| link.user));
         Ok(Arc::new(Completer {
             relations,
             functions,

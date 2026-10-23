@@ -66,6 +66,9 @@ impl DatabaseSession {
         if let Some(link) = self.mssql() {
             return on_runtime(async move { link.export(select, columns, relation, format, path).await }).await;
         }
+        if let Some(link) = self.oracle() {
+            return on_runtime(async move { link.export(select, relation, format, path).await }).await;
+        }
         let client = self.client()?;
         let endpoint = self.settings().endpoint();
         on_runtime(async move {
@@ -244,8 +247,9 @@ fn keys_condition(primary_key: &[String], keys: &[Vec<String>], dialect: Dialect
     if keys.is_empty() {
         return Ok("1 = 0".to_string());
     }
-    // SQL Server has no row values: (a = 1 AND b = 2) OR …, each typed.
-    if dialect == Dialect::Mssql {
+    // SQL Server has no row values, and Oracle's TO_CHAR writes 0.5 as .5:
+    // (a = 1 AND b = 2) OR …, each typed.
+    if matches!(dialect, Dialect::Mssql | Dialect::Oracle) {
         let rows = keys
             .iter()
             .map(|key| {

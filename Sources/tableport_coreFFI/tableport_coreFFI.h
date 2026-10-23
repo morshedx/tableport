@@ -615,6 +615,11 @@ int32_t uniffi_tableport_core_fn_func_run_mcp_bridge(RustBuffer socket_path, Rus
 uint64_t uniffi_tableport_core_fn_func_start_mcp_server(RustBuffer socket_path, RustBuffer version, uint64_t host, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_LOAD_ORACLE_CLIENT
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_LOAD_ORACLE_CLIENT
+RustBuffer uniffi_tableport_core_fn_func_load_oracle_client(RustBuffer directory, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_REDIS_CHANGE_COMMANDS
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_FN_FUNC_REDIS_CHANGE_COMMANDS
 RustBuffer uniffi_tableport_core_fn_func_redis_change_commands(RustBuffer changes, RustCallStatus *_Nonnull out_status
@@ -991,6 +996,12 @@ uint16_t uniffi_tableport_core_checksum_func_run_mcp_bridge(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_START_MCP_SERVER
 #define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_START_MCP_SERVER
 uint16_t uniffi_tableport_core_checksum_func_start_mcp_server(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_LOAD_ORACLE_CLIENT
+#define UNIFFI_FFIDEF_UNIFFI_TABLEPORT_CORE_CHECKSUM_FUNC_LOAD_ORACLE_CLIENT
+uint16_t uniffi_tableport_core_checksum_func_load_oracle_client(void
     
 );
 #endif

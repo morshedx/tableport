@@ -15,6 +15,7 @@ mod libsql;
 mod mongo;
 mod mssql;
 mod mysql;
+mod oracle;
 mod query;
 mod redis;
 mod rows;
@@ -32,6 +33,7 @@ pub use changes::{changes_sql, insert_sql, CellDraft, NewRow, PendingChanges, Ro
 pub use completion::{rank_names, Completer, CompletionItem, CompletionKind, Completions, KeywordCase};
 pub use error::DatabaseError;
 pub use export::{rows_to_csv, rows_to_insert_sql, rows_to_json, ExportFormat, ExportScope};
+pub use oracle::load_oracle_client;
 pub use mcp::{run_mcp_bridge, start_mcp_server, McpConnection, McpHost, McpLogEntry, McpServer};
 pub use query::{QueryResult, ResultSet};
 pub use redis::{redis_change_commands, RedisChange, RedisDatabase, RedisItem, RedisKey, RedisKeyKind, RedisKeyPage, RedisValue};

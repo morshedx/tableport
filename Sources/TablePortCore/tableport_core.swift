@@ -5289,6 +5289,11 @@ public enum Engine: Equatable, Hashable {
      * start in: the sidebar shows every keyspace.
      */
     case cassandra
+    /**
+     * Oracle Database. `database` is the service name; `host` may instead
+     * hold a whole connect descriptor, (description=…).
+     */
+    case oracle
 
 
 
@@ -5325,6 +5330,8 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         case 7: return .mssql
         
         case 8: return .cassandra
+        
+        case 9: return .oracle
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -5364,6 +5371,10 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         
         case .cassandra:
             writeInt(&buf, Int32(8))
+        
+        
+        case .oracle:
+            writeInt(&buf, Int32(9))
         
         }
     }
@@ -7739,6 +7750,19 @@ public func startMcpServer(socketPath: String, version: String, host: McpHost)th
 })
 }
 /**
+ * Loads Oracle's Instant Client from `directory`, once for the app's life,
+ * and returns its version, such as "23.3.0.23.9". Loading another folder
+ * later needs a restart of TablePort: the client stays loaded.
+ */
+public func loadOracleClient(directory: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeDatabaseError_lift) {
+        uniffiCallStatus in
+    uniffi_tableport_core_fn_func_load_oracle_client(
+        FfiConverterString.lower(directory),uniffiCallStatus
+    )
+})
+}
+/**
  * The commands for review, as redis-cli lines.
  */
 public func redisChangeCommands(changes: [RedisChange])throws  -> [String]  {
@@ -7969,6 +7993,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_func_start_mcp_server() != 57500) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tableport_core_checksum_func_load_oracle_client() != 64197) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_func_redis_change_commands() != 37514) {

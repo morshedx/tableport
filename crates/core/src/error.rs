@@ -137,6 +137,27 @@ impl DatabaseError {
     }
 }
 
+impl DatabaseError {
+    /// Oracle's own "ORA-00942: table or view does not exist", without the
+    /// help link the client adds; the reason for client and network failures.
+    pub(crate) fn from_oracle(error: &oracle::Error, endpoint: &str) -> Self {
+        let text = error.to_string();
+        let message = text.lines().next().unwrap_or(&text).to_string();
+        if message.contains("DPI-1047") {
+            return Self::Failed {
+                message: "Oracle Instant Client isn't loaded.".into(),
+                detail: None,
+                hint: Some("Choose the Instant Client folder in the connection form.".into()),
+                position: None,
+            };
+        }
+        if message.contains("ORA-12541") || message.contains("ORA-12543") || message.contains("ORA-12170") {
+            return Self::new(format!("Could not reach {endpoint}: {message}"));
+        }
+        Self::new(message)
+    }
+}
+
 fn io_reason(error: &io::Error) -> String {
     match error.kind() {
         io::ErrorKind::ConnectionRefused => "Connection refused".into(),

@@ -90,6 +90,9 @@ struct EngineLogo: View {
             logo(Self.redis, label: "Redis", letters: "Re", color: Color(red: 1.0, green: 0.27, blue: 0.22))
         case .mongo:
             logo(Self.mongo, label: "MongoDB", letters: "Mo", color: Color(red: 0.28, green: 0.64, blue: 0.28))
+        case .oracle:
+            // Oracle's trademark rules don't allow its logo here: letters, in Oracle's red.
+            logo(nil, label: "Oracle", letters: "Or", color: Color(red: 0.78, green: 0.27, blue: 0.20))
         case .cassandra:
             logo(Self.cassandra, label: "Cassandra", letters: "Ca", color: Color(red: 0.07, green: 0.53, blue: 0.69), tint: true)
         case .mssql:

@@ -58,6 +58,10 @@ struct SavedConnection: Codable, Identifiable, Hashable {
     var displayHost: String { Self.displayHost(of: host) }
 
     static func displayHost(of host: String) -> String {
+        // An Oracle connect descriptor: (description=…(host=adb.oraclecloud.com)…).
+        if host.hasPrefix("("), let range = host.range(of: "host=", options: .caseInsensitive) {
+            return String(host[range.upperBound...].prefix { $0 != ")" }).trimmingCharacters(in: .whitespaces)
+        }
         guard let range = host.range(of: "://") else { return host }
         var rest = host[range.upperBound...]
         if let at = rest.lastIndex(of: "@") { rest = rest[rest.index(after: at)...] }
@@ -118,6 +122,7 @@ extension Engine: Codable {
         case .mongo: "mongo"
         case .mssql: "mssql"
         case .cassandra: "cassandra"
+        case .oracle: "oracle"
         }
     }
 
@@ -131,6 +136,7 @@ extension Engine: Codable {
         case "mongo": .mongo
         case "mssql": .mssql
         case "cassandra": .cassandra
+        case "oracle": .oracle
         default: .postgres
         }
     }
@@ -150,6 +156,7 @@ extension Engine: Codable {
         case .mongo: "MongoDB"
         case .mssql: "SQL Server"
         case .cassandra: "Cassandra"
+        case .oracle: "Oracle"
         }
     }
 

@@ -31,6 +31,9 @@ impl SqlFunction {
             (Self::CurrentDate, Engine::Mssql) => "CAST(SYSDATETIME() AS date)",
             (Self::CurrentTime, Engine::Mssql) => "CAST(SYSDATETIME() AS time)",
             (Self::Now, Engine::Cassandra) => "toTimestamp(now())",
+            // Oracle has no time-only type: the current time is a date like the others.
+            (Self::Now | Self::CurrentTime, Engine::Oracle) => "SYSDATE",
+            (Self::CurrentDate, Engine::Oracle) => "TRUNC(SYSDATE)",
             (Self::CurrentDate, Engine::Cassandra) => "currentDate()",
             (Self::CurrentTime, Engine::Cassandra) => "currentTime()",
             (Self::Now, Engine::Postgres | Engine::Mysql | Engine::Redis | Engine::Mongo) => "now()",
@@ -85,6 +88,10 @@ pub fn insert_sql(row: &NewRow, relation: &Relation, columns: &[Column], engine:
     if set.is_empty() {
         if engine == Engine::Mysql {
             return Ok(format!("INSERT INTO {} () VALUES ()", relation.quoted_name()));
+        }
+        // Oracle has no DEFAULT VALUES: one column gets its default, the rest follow.
+        if let (Engine::Oracle, Some(first)) = (engine, columns.first()) {
+            return Ok(format!("INSERT INTO {} ({}) VALUES (DEFAULT)", relation.quoted_name(), quote_identifier(&first.name)));
         }
         return Ok(format!("INSERT INTO {} DEFAULT VALUES", relation.quoted_name()));
     }
@@ -186,6 +193,9 @@ impl DatabaseSession {
             return crate::on_runtime(async move { link.apply_checked(statements, checked).await }).await;
         }
         if let Some(link) = self.mssql() {
+            return crate::on_runtime(async move { link.apply_checked(statements, checked).await }).await;
+        }
+        if let Some(link) = self.oracle() {
             return crate::on_runtime(async move { link.apply_checked(statements, checked).await }).await;
         }
         self.execute(do_block(&statements, checked)?).await

@@ -116,6 +116,7 @@ impl DatabaseSession {
             Dialect::Sqlite => return self.sqlite_columns(&relation).await,
             Dialect::Mysql => return self.mysql_columns(&relation).await,
             Dialect::Mssql => return self.mssql_columns(&relation).await,
+            Dialect::Oracle => return self.oracle_columns(&relation).await,
             Dialect::Postgres => {}
         }
         let rows = self
@@ -212,6 +213,7 @@ impl DatabaseSession {
             Dialect::Sqlite => return self.row_count(relation, Vec::new(), Vec::new()).await.map(Some),
             Dialect::Mysql => return self.mysql_estimated_row_count(&relation).await,
             Dialect::Mssql => return self.mssql_estimated_row_count(&relation).await,
+            Dialect::Oracle => return self.oracle_estimated_row_count(&relation).await,
             Dialect::Postgres => {}
         }
         let name = quote_literal(&relation.quoted_name())?;
@@ -267,6 +269,8 @@ pub(crate) enum Dialect {
     Mysql,
     /// TablePort's own SQL Server connection, with QUOTED_IDENTIFIER on.
     Mssql,
+    /// TablePort's own Oracle connection, with its NLS date formats.
+    Oracle,
 }
 
 impl Dialect {
@@ -277,6 +281,7 @@ impl Dialect {
             Dialect::Sqlite => format!("CAST({expression} AS TEXT)"),
             Dialect::Mysql => format!("CAST({expression} AS CHAR)"),
             Dialect::Mssql => format!("CAST({expression} AS nvarchar(max))"),
+            Dialect::Oracle => format!("TO_CHAR({expression})"),
         }
     }
 
@@ -293,7 +298,7 @@ impl Dialect {
     /// SQL Server's values are turned into text by TablePort, not the server.
     pub(crate) fn key_text(self, column: &str) -> String {
         match self {
-            Dialect::Mssql => column.to_string(),
+            Dialect::Mssql | Dialect::Oracle => column.to_string(),
             _ => self.text(column),
         }
     }
@@ -301,6 +306,7 @@ impl Dialect {
     /// LIMIT and OFFSET, or SQL Server's OFFSET … FETCH, which needs an ORDER BY.
     pub(crate) fn page(self, ordered: bool, offset: u64, limit: u64) -> String {
         match self {
+            Dialect::Oracle => format!(" OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"),
             Dialect::Mssql => format!(
                 "{} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY",
                 if ordered { "" } else { " ORDER BY (SELECT NULL)" }
@@ -321,6 +327,7 @@ impl Dialect {
             Dialect::Mysql if is_mysql_binary(column_type) => format!("LEFT(CONCAT('\\x', LOWER(HEX({column}))), {GRID_CELL_LIMIT})"),
             Dialect::Mysql => format!("LEFT(CAST({column} AS CHAR), {GRID_CELL_LIMIT})"),
             Dialect::Mssql => crate::mssql::cell(column, column_type, Some(GRID_CELL_LIMIT)),
+            Dialect::Oracle => crate::oracle::cell(column, column_type, Some(GRID_CELL_LIMIT)),
         }
     }
 
@@ -335,6 +342,7 @@ impl Dialect {
             Dialect::Mysql if is_mysql_binary(column_type) => format!("CONCAT('\\x', LOWER(HEX({column})))"),
             Dialect::Mysql => format!("CAST({column} AS CHAR)"),
             Dialect::Mssql => crate::mssql::cell(column, column_type, None),
+            Dialect::Oracle => crate::oracle::cell(column, column_type, None),
         }
     }
 
@@ -346,6 +354,8 @@ impl Dialect {
             // SQLite's LIKE ignores case (for ASCII) and has no default escape.
             // SQL Server's default collations ignore case too.
             Dialect::Sqlite | Dialect::Mysql | Dialect::Mssql => format!("{text} {not}LIKE {pattern} ESCAPE '\\'"),
+            // Oracle compares text with case.
+            Dialect::Oracle => format!("UPPER({text}) {not}LIKE UPPER({pattern}) ESCAPE '\\'"),
         }
     }
 
@@ -357,6 +367,8 @@ impl Dialect {
             Dialect::Mysql => format!("NOT ({left} <=> {right})"),
             // IS DISTINCT FROM is new in SQL Server 2022; INTERSECT treats NULLs as equal.
             Dialect::Mssql => format!("NOT EXISTS (SELECT {left} INTERSECT SELECT {right})"),
+            // DECODE treats two NULLs as equal.
+            Dialect::Oracle => format!("DECODE({left}, {right}, 0, 1) = 1"),
         }
     }
 }
@@ -410,7 +422,11 @@ impl RowFilter {
             FilterTarget::AnyColumn => {
                 let any = columns
                     .iter()
-                    .filter(|column| dialect != Dialect::Mssql || crate::mssql::is_searchable(&column.column_type))
+                    .filter(|column| match dialect {
+                        Dialect::Mssql => crate::mssql::is_searchable(&column.column_type),
+                        Dialect::Oracle => crate::oracle::is_searchable(&column.column_type),
+                        _ => true,
+                    })
                     .map(|column| condition(&quote_identifier(&column.name), true, self.operator, &self.value, dialect))
                     .collect::<Result<Vec<_>, _>>()?;
                 // 1 = 0 rather than false, which SQL Server lacks.

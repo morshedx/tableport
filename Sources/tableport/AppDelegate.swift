@@ -40,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = Updater.shared  // starts Sparkle's daily check  // another copy (DMG, .build) quits
         AppFont.register()
         AppSettings.shared.applyAppearance()
+        OracleClient.loadSaved()
         // A regular window app: stay in the Dock when every window is closed,
         // which HostedWindow would otherwise undo for menu-bar apps.
         DockPresence.keepsDock = { true }
