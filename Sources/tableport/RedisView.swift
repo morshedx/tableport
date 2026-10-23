@@ -348,6 +348,8 @@ private struct RedisSidebar: View {
                 }
             }
             .listStyle(.sidebar)
+            // The list's own material is darker than the SQL sidebar, more so in a background window.
+            .scrollContentBackground(.hidden)
             .overlay {
                 if model.keys.isEmpty && !model.isScanning && model.keysError == nil {
                     Text(model.search.isEmpty ? "No keys in this database" : "No keys match")
@@ -382,7 +384,7 @@ private struct RedisSidebar: View {
             .padding(.horizontal, 10)
             .frame(height: 30)
         }
-        .background(Theme.sidebarBg)
+        .background(SidebarView.background)
     }
 }
 
