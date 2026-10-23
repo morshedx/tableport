@@ -4055,6 +4055,7 @@ name = "tableport-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "futures",
  "futures-util",
@@ -4065,6 +4066,7 @@ dependencies = [
  "postgres-native-tls",
  "redis",
  "reqwest",
+ "ring",
  "rusqlite",
  "russh",
  "rustls",

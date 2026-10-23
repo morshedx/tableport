@@ -90,6 +90,9 @@ struct EngineLogo: View {
             logo(Self.redis, label: "Redis", letters: "Re", color: Color(red: 1.0, green: 0.27, blue: 0.22))
         case .mongo:
             logo(Self.mongo, label: "MongoDB", letters: "Mo", color: Color(red: 0.28, green: 0.64, blue: 0.28))
+        case .firestore:
+            // Google's brand rules don't allow Firebase's logo here: letters, in Firebase's amber.
+            logo(nil, label: "Firestore", letters: "Fs", color: Color(red: 0.96, green: 0.62, blue: 0.10))
         case .d1:
             // Cloudflare's trademark rules don't allow its logo here: letters, in Cloudflare's orange.
             logo(nil, label: "Cloudflare D1", letters: "D1", color: Color(red: 0.95, green: 0.50, blue: 0.13))

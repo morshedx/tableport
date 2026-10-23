@@ -81,7 +81,7 @@ impl DatabaseSession {
             crate::Engine::Mssql => return self.mssql_completer().await,
             crate::Engine::Cassandra => return self.cassandra_completer().await,
             crate::Engine::Oracle => return self.oracle_completer().await,
-            crate::Engine::Redis | crate::Engine::Mongo => return Err(DatabaseError::new("This connection has no SQL to complete.")),
+            crate::Engine::Redis | crate::Engine::Mongo | crate::Engine::Firestore => return Err(DatabaseError::new("This connection has no SQL to complete.")),
             crate::Engine::Postgres => {}
         }
         let relation_rows = self

@@ -649,7 +649,7 @@ impl ShellParser {
         self.chars[start..self.index].iter().collect()
     }
 
-    fn string(&mut self) -> Result<String, DatabaseError> {
+    pub(crate) fn string(&mut self) -> Result<String, DatabaseError> {
         let quote = self.peek().ok_or_else(|| self.error("Expected a string"))?;
         self.index += 1;
         let mut out = String::new();

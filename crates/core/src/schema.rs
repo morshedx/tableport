@@ -70,6 +70,10 @@ impl DatabaseSession {
         if self.engine() == crate::Engine::Cassandra {
             return Ok(self.cassandra_schemas().await?.into_iter().map(|schema| schema.name).collect());
         }
+        // A connection is to one database of one project.
+        if self.engine() == crate::Engine::Firestore {
+            return Ok(self.firestore_schemas().await?.into_iter().map(|schema| schema.name).collect());
+        }
         // A SQLite connection is one file.
         match self.dialect() {
             Dialect::Sqlite => return Ok(vec![self.settings().database]),
@@ -95,6 +99,9 @@ impl DatabaseSession {
         }
         if self.engine() == crate::Engine::Cassandra {
             return self.cassandra_schemas().await;
+        }
+        if self.engine() == crate::Engine::Firestore {
+            return self.firestore_schemas().await;
         }
         match self.dialect() {
             Dialect::Sqlite => return self.sqlite_schemas().await,
@@ -145,6 +152,9 @@ impl DatabaseSession {
         if self.engine() == crate::Engine::Mongo {
             return Ok(if relation.kind == RelationKind::View { Vec::new() } else { vec!["_id".into()] });
         }
+        if self.engine() == crate::Engine::Firestore {
+            return Ok(vec![crate::firestore::ID.into()]);
+        }
         // A materialized view is written through its table only.
         if self.engine() == crate::Engine::Cassandra {
             return if relation.kind == RelationKind::View { Ok(Vec::new()) } else { self.cassandra_primary_key(&relation).await };
@@ -175,6 +185,9 @@ impl DatabaseSession {
         }
         if self.engine() == crate::Engine::Cassandra {
             return Ok(self.cassandra_foreign_keys());
+        }
+        if self.engine() == crate::Engine::Firestore {
+            return Ok(Vec::new());
         }
         match self.dialect() {
             Dialect::Sqlite => return self.sqlite_foreign_keys(&relation).await,
@@ -284,6 +297,9 @@ pub fn drop_relation_sql(relation: Relation, cascade: bool, engine: crate::Engin
     if engine == crate::Engine::Mongo {
         return crate::mongo::shell_command(&relation, "drop()");
     }
+    if engine == crate::Engine::Firestore {
+        return crate::firestore::recursive_delete_command(&relation);
+    }
     // Oracle drops the other tables' foreign keys with CASCADE CONSTRAINTS.
     if engine == crate::Engine::Oracle {
         return match relation.kind {
@@ -311,6 +327,8 @@ pub fn truncate_sql(relation: Relation, restart_identity: bool, cascade: bool, e
     // SQLite has no TRUNCATE; DELETE without WHERE empties the table quickly.
     match engine {
         crate::Engine::Mongo => return crate::mongo::shell_command(&relation, "deleteMany({})"),
+        // Firestore deletes a collection by deleting its documents: emptying is removing.
+        crate::Engine::Firestore => return crate::firestore::recursive_delete_command(&relation),
         crate::Engine::Sqlite | crate::Engine::Libsql | crate::Engine::D1 => return format!("DELETE FROM {};", relation.quoted_name()),
         // TRUNCATE restarts AUTO_INCREMENT and IDENTITY on its own, and has no CASCADE.
         crate::Engine::Mysql | crate::Engine::Mssql | crate::Engine::Oracle => return format!("TRUNCATE TABLE {};", relation.quoted_name()),

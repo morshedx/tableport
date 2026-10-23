@@ -11,6 +11,7 @@ mod completion;
 mod d1;
 mod error;
 mod export;
+mod firestore;
 mod mcp;
 mod libsql;
 mod mongo;

@@ -86,7 +86,7 @@ final class QueryTabModel: ObservableObject {
     /// Beautify: the selection, or all the text.
     func beautify() {
         // The SQL formatter would mangle mongo shell code.
-        if session.engine() == .mongo { return }
+        if session.engine() == .mongo || session.engine() == .firestore { return }
         let text = sql as NSString
         if selection.length > 0 && NSMaxRange(selection) <= text.length {
             let formatted = formatSql(sql: text.substring(with: selection))

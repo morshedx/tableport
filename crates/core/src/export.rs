@@ -50,6 +50,9 @@ impl DatabaseSession {
         if self.engine() == crate::Engine::Mongo {
             return self.mongo_export(relation, columns, filters, sort, scope, format, path).await;
         }
+        if self.engine() == crate::Engine::Firestore {
+            return self.firestore_export(relation, columns, filters, sort, scope, format, path).await;
+        }
         if self.engine() == crate::Engine::Cassandra {
             return self.cassandra_export(relation, columns, filters, sort, primary_key, scope, format, path).await;
         }
@@ -162,6 +165,9 @@ impl DatabaseSession {
         }
         if self.engine() == crate::Engine::Mongo {
             return self.mongo_full_rows(relation, columns, keys).await;
+        }
+        if self.engine() == crate::Engine::Firestore {
+            return self.firestore_full_rows(relation, columns, keys).await;
         }
         if self.engine() == crate::Engine::Cassandra {
             return self.cassandra_full_rows(relation, columns, primary_key, keys).await;

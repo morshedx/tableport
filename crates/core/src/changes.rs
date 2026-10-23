@@ -36,7 +36,7 @@ impl SqlFunction {
             (Self::CurrentDate, Engine::Oracle) => "TRUNC(SYSDATE)",
             (Self::CurrentDate, Engine::Cassandra) => "currentDate()",
             (Self::CurrentTime, Engine::Cassandra) => "currentTime()",
-            (Self::Now, Engine::Postgres | Engine::Mysql | Engine::Redis | Engine::Mongo) => "now()",
+            (Self::Now, Engine::Postgres | Engine::Mysql | Engine::Redis | Engine::Mongo | Engine::Firestore) => "now()",
             (Self::Now, Engine::Sqlite | Engine::Libsql | Engine::D1) => "CURRENT_TIMESTAMP",
             (Self::CurrentDate, _) => "CURRENT_DATE",
             (Self::CurrentTime, _) => "CURRENT_TIME",
@@ -75,6 +75,9 @@ pub struct PendingChanges {
 pub fn insert_sql(row: &NewRow, relation: &Relation, columns: &[Column], engine: Engine) -> Result<String, DatabaseError> {
     if engine == Engine::Mongo {
         return crate::mongo::insert_command(row, relation, columns);
+    }
+    if engine == Engine::Firestore {
+        return crate::firestore::insert_command(row, relation, columns);
     }
     // SQLite has no DEFAULT in VALUES: a column left out gets its default.
     let set: Vec<&Column> = columns
@@ -116,6 +119,9 @@ pub fn changes_sql(
 ) -> Result<Vec<String>, DatabaseError> {
     if engine == Engine::Mongo {
         return crate::mongo::change_commands(changes, relation, columns);
+    }
+    if engine == Engine::Firestore {
+        return crate::firestore::change_commands(changes, relation, columns);
     }
     if engine == Engine::Cassandra {
         return crate::cassandra::change_statements(changes, relation, columns, primary_key);
@@ -177,6 +183,9 @@ impl DatabaseSession {
         let engine = self.engine();
         if engine == Engine::Mongo {
             return self.mongo_commit(relation, changes, columns).await;
+        }
+        if engine == Engine::Firestore {
+            return self.firestore_commit(relation, changes, columns).await;
         }
         if engine == Engine::Cassandra {
             return self.cassandra_commit(changes, relation, columns, primary_key).await;

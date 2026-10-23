@@ -60,6 +60,7 @@ impl DatabaseSession {
             Engine::Oracle => return self.oracle_structure(&relation).await,
             Engine::Redis => return Err(DatabaseError::new("Redis keys have no table structure.")),
             Engine::Mongo => return self.mongo_structure(relation).await,
+            Engine::Firestore => return self.firestore_structure(relation).await,
             Engine::Postgres => {}
         }
         let regclass = relation.regclass()?;
@@ -198,6 +199,7 @@ pub fn structure_change_sql(relation: Relation, change: StructureChange, engine:
         Engine::Oracle => return crate::oracle::structure_change_sql(&relation, &change, &Default::default()),
         Engine::Redis => return Err(DatabaseError::new("Redis keys have no table structure.")),
         Engine::Mongo => return crate::mongo::structure_change_commands(&relation, &change),
+        Engine::Firestore => return Err(DatabaseError::new("A Firestore collection's fields come from its documents; there is no structure to change.")),
         Engine::Postgres => {}
     }
     let table = format!("ALTER TABLE {}", relation.quoted_name());

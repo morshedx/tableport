@@ -27,7 +27,8 @@ struct StructureView: View {
     private var canEdit: Bool { model.canAddRows && model.relation.kind != .foreignTable }
     /// A MongoDB collection's fields come from its documents, not a definition.
     private var canEditColumns: Bool { canEdit && !isDocuments }
-    private var isDocuments: Bool { model.session.engine() == .mongo }
+    /// MongoDB's and Firestore's fields come from their documents.
+    private var isDocuments: Bool { [.mongo, .firestore].contains(model.session.engine()) }
     private var rules: StructureRules { StructureRules.of(model.session.engine()) }
 
     var body: some View {
@@ -43,7 +44,7 @@ struct StructureView: View {
                                 .textSelection(.enabled)
                         }
                         columns(structure.columns)
-                        indexes(structure.indexes)
+                        if rules.hasIndexes { indexes(structure.indexes) }
                         if rules.hasForeignKeys {
                             constraints("Foreign keys", structure.constraints.filter { $0.kind == .foreignKey }, showsKind: false)
                         }
@@ -81,7 +82,7 @@ struct StructureView: View {
     private var toolbar: some View {
         HStack(spacing: 8) {
             if !isDocuments { Button { sheet = .addColumn } label: { Label("Column", systemImage: "plus") } }
-            Button { sheet = .addIndex } label: { Label("Index", systemImage: "plus") }
+            if rules.hasIndexes { Button { sheet = .addIndex } label: { Label("Index", systemImage: "plus") } }
             if rules.hasForeignKeys { Button { sheet = .addForeignKey } label: { Label("Foreign Key", systemImage: "plus") } }
             Spacer()
             Text(isDocuments ? "Fields and their types, from a sample of documents." : "Double-click a column to edit it. Right-click for more.")
@@ -505,7 +506,7 @@ private func commonColumnTypes(_ engine: Engine) -> [String] {
          "list<text>", "set<text>", "map<text, text>"]
     case .sqlite, .libsql, .d1:
         ["INTEGER", "REAL", "TEXT", "BLOB", "NUMERIC"]
-    case .redis, .mongo:
+    case .redis, .mongo, .firestore:
         []
     }
 }
@@ -582,7 +583,7 @@ struct NewTableSheet: View {
                 Row(name: "id", columnType: "uuid", primaryKey: true, nullable: false),
                 Row(name: "", columnType: "text", primaryKey: false, nullable: true),
             ])
-        case .postgres, .redis, .mongo:
+        case .postgres, .redis, .mongo, .firestore:
             break
         }
     }
@@ -914,6 +915,8 @@ struct StructureRules {
     var hasDefaults = true
     var hasComments = true
     var hasUniqueIndexes = true
+    /// Indexes TablePort lists and adds; Firestore keeps its own, in the console.
+    var hasIndexes = true
     /// The header of the column that holds `comment`; empty hides it.
     var commentLabel = "comment"
     var defaultExample = "now()"
@@ -946,6 +949,9 @@ struct StructureRules {
         case .mongo:
             StructureRules(hasForeignKeys: false, hasConstraints: false, hasNullability: false, hasDefaults: false, hasComments: false,
                            commentLabel: "", typeChangeNote: nil, indexNote: "MongoDB builds the index while the collection stays in use.")
+        case .firestore:
+            StructureRules(hasForeignKeys: false, hasConstraints: false, hasNullability: false, hasDefaults: false, hasComments: false,
+                           hasUniqueIndexes: false, hasIndexes: false, commentLabel: "", typeChangeNote: nil)
         case .redis:
             StructureRules(hasForeignKeys: false, hasConstraints: false, hasNullability: false, hasDefaults: false, hasComments: false,
                            hasUniqueIndexes: false, commentLabel: "", typeChangeNote: nil)

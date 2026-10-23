@@ -46,6 +46,9 @@ chrono = { version = "0.4", default-features = false, features = ["alloc"] }  # 
 # Oracle, through ODPI-C: Oracle's Instant Client is loaded at run time from
 # the folder the user installed it in, so the app neither links nor ships it.
 oracle = { version = "0.6", features = ["chrono"] }
+# Firestore: its REST API; ring signs the service account's token request.
+ring = "0.17"
+base64 = "0.22"
 # MongoDB: the official driver.
 mongodb = "3.9"
 # MySQL and MariaDB. Native TLS, as for PostgreSQL; the Rust zlib, so no C toolchain.

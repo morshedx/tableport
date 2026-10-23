@@ -60,6 +60,9 @@ impl DatabaseSession {
         if self.engine() == crate::Engine::Mongo {
             return self.mongo_run(sql, max_rows).await;
         }
+        if self.engine() == crate::Engine::Firestore {
+            return self.firestore_run(sql, max_rows, false).await;
+        }
         let client = self.client()?;
         let endpoint = self.settings().endpoint();
         on_runtime(async move {

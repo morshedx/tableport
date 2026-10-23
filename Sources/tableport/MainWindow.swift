@@ -150,6 +150,9 @@ final class WorkspaceModel: ObservableObject {
         if settings.engine == .sqlite { return (settings.database as NSString).abbreviatingWithTildeInPath }
         if settings.engine == .libsql { return settings.database }
         if settings.engine == .d1 { return "Cloudflare D1 · \(settings.database)" }
+        if settings.engine == .firestore {
+            return settings.host.isEmpty ? "Firestore · \(settings.user)" : "Firestore emulator · \(settings.host)"
+        }
         if settings.engine == .mongo {
             let host = settings.host.contains("://") ? SavedConnection.displayHost(of: settings.host) : "\(settings.host):\(settings.port)"
             return settings.database.isEmpty ? host : "\(host)/\(settings.database)"
@@ -703,6 +706,14 @@ private struct HeaderBar: View {
                     Text(model.connection.displayHost)
                 }
                 .help("\(model.connection.host):\(model.connection.port)")
+            } else if model.connection.engine == .firestore {
+                // One database of one project.
+                HeaderChip {
+                    headerLucide("database")
+                } label: {
+                    Text(model.connection.user)
+                }
+                .help(model.connection.host.isEmpty ? "Project \(model.connection.user)" : "Emulator at \(model.connection.host)")
             } else if model.connection.engine == .d1 {
                 // One database, named by its ID.
                 HeaderChip {

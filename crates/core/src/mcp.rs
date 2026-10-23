@@ -368,6 +368,7 @@ fn engine_name(engine: crate::Engine) -> &'static str {
         crate::Engine::Sqlite => "SQLite",
         crate::Engine::Libsql => "libSQL",
         crate::Engine::D1 => "Cloudflare D1",
+        crate::Engine::Firestore => "Firestore",
         crate::Engine::Redis => "Redis",
         crate::Engine::Mongo => "MongoDB",
         crate::Engine::Mssql => "SQL Server",
@@ -431,7 +432,7 @@ fn tool_definitions() -> Value {
     json!([
         {
             "name": "list_connections",
-            "description": "The connections the user allowed for AI access in TablePort, with each one's engine: PostgreSQL, MySQL, SQL Server, Oracle, SQLite, libSQL, Redis, MongoDB or Cassandra.",
+            "description": "The connections the user allowed for AI access in TablePort, with each one's engine: PostgreSQL, MySQL, SQL Server, Oracle, SQLite, libSQL, Cloudflare D1, Redis, MongoDB, Firestore or Cassandra.",
             "inputSchema": { "type": "object", "properties": {} },
             "annotations": { "readOnlyHint": true },
         },
@@ -469,6 +470,7 @@ fn tool_definitions() -> Value {
                 On Redis: one read command (GET, HGETALL, LRANGE, SCAN, ZRANGE…) as sql; writes, scripts and KEYS are refused. \
                 On MongoDB: one call in mongo shell syntax as sql, such as db.people.find({ age: { $gt: 30 } }).limit(10) or \
                 db.orders.aggregate([…]); writes, $out and $merge are refused. \
+                On Firestore: one Firebase SDK read as sql, such as db.collection('users').where('age', '>', 30).limit(10).get(); writes are refused. \
                 On Cassandra: one CQL SELECT. On Oracle: one SELECT or WITH, in Oracle's SQL (FETCH FIRST n ROWS ONLY, not LIMIT). \
                 On SQL Server: one T-SQL SELECT or WITH … SELECT (use TOP, not LIMIT); variables, EXEC, INTO and OPENQUERY are refused.",
             "inputSchema": {
@@ -520,6 +522,14 @@ async fn read_only<T>(
 }
 
 async fn read_query(session: &DatabaseSession, sql: &str, max_rows: u64) -> Result<(String, String), DatabaseError> {
+    if session.engine() == crate::Engine::Firestore {
+        let mut rows = session.firestore_read(sql.to_string(), max_rows + 1).await?;
+        let truncated = rows.len() as u64 > max_rows;
+        rows.truncate(max_rows as usize);
+        let summary = format!("{}{} documents", rows.len(), if truncated { "+" } else { "" });
+        let body = json!({ "documents": rows, "count": rows.len(), "truncated": truncated });
+        return Ok((serde_json::to_string_pretty(&body).unwrap_or_default(), summary));
+    }
     if session.engine() == crate::Engine::Mongo {
         let mut rows = session.mongo_read(sql.to_string(), max_rows + 1).await?;
         let truncated = rows.len() as u64 > max_rows;
@@ -615,6 +625,9 @@ async fn read_query(session: &DatabaseSession, sql: &str, max_rows: u64) -> Resu
 }
 
 async fn explain_query(session: &DatabaseSession, sql: &str) -> Result<(String, String), DatabaseError> {
+    if session.engine() == crate::Engine::Firestore {
+        return Err(DatabaseError::new("Firestore has no query plans: each query needs an index, and Firestore names any that is missing."));
+    }
     if session.engine() == crate::Engine::Mongo {
         return Err(DatabaseError::new("explain_query isn't available on MongoDB yet; run_read_query shows the documents."));
     }

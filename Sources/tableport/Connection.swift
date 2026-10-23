@@ -50,6 +50,7 @@ struct SavedConnection: Codable, Identifiable, Hashable {
         if engine == .sqlite { return (database as NSString).abbreviatingWithTildeInPath }
         if engine == .libsql { return libsqlHost }
         if engine == .d1 { return "Cloudflare D1 · \(database)" }
+        if engine == .firestore { return host.isEmpty ? "Firestore · \(user)" : "Firestore emulator · \(host)" }
         if engine == .mongo { return database.isEmpty ? displayHost : "\(displayHost) : \(database)" }
         return ssh.map { "\(host) : \(database) via \($0.host)" } ?? "\(host) : \(database)"
     }
@@ -81,6 +82,12 @@ struct SavedConnection: Codable, Identifiable, Hashable {
             return ConnectionSettings(host: "", port: 0, database: database, user: "",
                                       password: try Keychain.secret(.databasePassword, for: id), tls: .disable,
                                       ssh: nil, readOnly: readOnly, engine: .libsql)
+        }
+        if engine == .firestore {
+            // The project as user, the service account's key as the secret, the emulator as host.
+            return ConnectionSettings(host: host, port: 0, database: database, user: user,
+                                      password: try Keychain.secret(.databasePassword, for: id), tls: .verifyFull,
+                                      ssh: nil, readOnly: readOnly, engine: .firestore)
         }
         if engine == .d1 {
             // The account ID as user, the database ID, and an API token; always HTTPS to Cloudflare.
@@ -126,6 +133,7 @@ extension Engine: Codable {
         case .mysql: "mysql"
         case .libsql: "libsql"
         case .d1: "d1"
+        case .firestore: "firestore"
         case .redis: "redis"
         case .mongo: "mongo"
         case .mssql: "mssql"
@@ -141,6 +149,7 @@ extension Engine: Codable {
         case "mysql": .mysql
         case "libsql": .libsql
         case "d1": .d1
+        case "firestore": .firestore
         case "redis": .redis
         case "mongo": .mongo
         case "mssql": .mssql
@@ -162,6 +171,7 @@ extension Engine: Codable {
         case .mysql: "MySQL"
         case .libsql: "libSQL"
         case .d1: "Cloudflare D1"
+        case .firestore: "Firestore"
         case .redis: "Redis"
         case .mongo: "MongoDB"
         case .mssql: "SQL Server"

@@ -5299,6 +5299,12 @@ public enum Engine: Equatable, Hashable {
      * and `password` an API token with D1 rights.
      */
     case d1
+    /**
+     * Google Cloud Firestore. `user` is the project ID, `database` the
+     * database ID, `password` a service account's JSON key, and `host` the
+     * emulator's host:port when it is used.
+     */
+    case firestore
 
 
 
@@ -5339,6 +5345,8 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         case 9: return .oracle
         
         case 10: return .d1
+        
+        case 11: return .firestore
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -5386,6 +5394,10 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         
         case .d1:
             writeInt(&buf, Int32(10))
+        
+        
+        case .firestore:
+            writeInt(&buf, Int32(11))
         
         }
     }

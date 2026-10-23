@@ -52,6 +52,10 @@ pub enum Engine {
     /// Cloudflare D1. `user` is the account ID, `database` the database ID
     /// and `password` an API token with D1 rights.
     D1,
+    /// Google Cloud Firestore. `user` is the project ID, `database` the
+    /// database ID, `password` a service account's JSON key, and `host` the
+    /// emulator's host:port when it is used.
+    Firestore,
 }
 
 impl Engine {
@@ -101,6 +105,8 @@ impl ConnectionSettings {
             }
             Engine::Oracle => format!("{}:{}", self.host, self.port),
             // The database ID's first part names it well enough in messages.
+            Engine::Firestore if !self.host.trim().is_empty() => format!("the Firestore emulator at {}", self.host.trim()),
+            Engine::Firestore => format!("Firestore project {}", self.user.trim()),
             Engine::D1 => format!("D1 database {}", self.database.trim().split('-').next().unwrap_or_default()),
             Engine::Sqlite => std::path::Path::new(&self.database)
                 .file_name()
@@ -135,6 +141,7 @@ enum Link {
     Cassandra(crate::cassandra::CassandraLink),
     Oracle(crate::oracle::OracleLink),
     D1(crate::d1::D1Link),
+    Firestore(crate::firestore::FirestoreLink),
 }
 
 struct PgLink {
@@ -175,6 +182,7 @@ impl DatabaseSession {
             Link::Cassandra(link) => link.version.clone(),
             Link::Oracle(link) => link.version.clone(),
             Link::D1(link) => link.version.clone(),
+            Link::Firestore(link) => link.version.clone(),
         }
     }
 
@@ -217,6 +225,9 @@ impl DatabaseSession {
         if let Some(link) = self.oracle() {
             return on_runtime(async move { link.ping().await }).await;
         }
+        if let Some(link) = self.firestore() {
+            return on_runtime(async move { link.ping().await }).await;
+        }
         let client = self.client()?;
         let endpoint = self.settings.endpoint();
         on_runtime(async move {
@@ -246,6 +257,7 @@ impl DatabaseSession {
             Link::Cassandra(link) => link.is_closed(),
             Link::Oracle(link) => link.is_closed(),
             Link::D1(link) => link.is_closed(),
+            Link::Firestore(link) => link.is_closed(),
         }
     }
 
@@ -261,6 +273,7 @@ impl DatabaseSession {
             Link::Cassandra(link) => link.close(),
             Link::Oracle(link) => link.close(),
             Link::D1(link) => link.close(),
+            Link::Firestore(link) => link.close(),
         }
     }
 
@@ -275,6 +288,9 @@ impl DatabaseSession {
         }
         if settings_engine(self) == Engine::Mongo {
             return self.mongo_run(sql, 0).await.map(|_| ());
+        }
+        if settings_engine(self) == Engine::Firestore {
+            return self.firestore_run(sql, 0, false).await.map(|_| ());
         }
         if let Some(link) = self.mssql() {
             return on_runtime(async move { link.execute(sql).await }).await;
@@ -315,7 +331,7 @@ impl DatabaseSession {
     pub(crate) fn client(&self) -> Result<Arc<Client>, DatabaseError> {
         match &*self.read_link() {
             Link::Postgres(link) => Ok(link.client.clone()),
-            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) | Link::Oracle(_) | Link::D1(_) => {
+            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) | Link::Oracle(_) | Link::D1(_) | Link::Firestore(_) => {
                 Err(DatabaseError::new("This needs a PostgreSQL connection."))
             }
         }
@@ -327,7 +343,7 @@ impl DatabaseSession {
             Link::Sqlite(link) => Some(crate::libsql::SqliteLike::File(link.clone())),
             Link::Libsql(link) => Some(crate::libsql::SqliteLike::Remote(link.clone())),
             Link::D1(link) => Some(crate::libsql::SqliteLike::D1(link.clone())),
-            Link::Postgres(_) | Link::Mysql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) | Link::Oracle(_) => None,
+            Link::Postgres(_) | Link::Mysql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) | Link::Oracle(_) | Link::Firestore(_) => None,
         }
     }
 
@@ -344,6 +360,14 @@ impl DatabaseSession {
         match &*self.read_link() {
             Link::Redis(link) => Ok(link.clone()),
             _ => Err(DatabaseError::new("This needs a Redis connection.")),
+        }
+    }
+
+    /// The Firestore link, when the connection is to Firestore.
+    pub(crate) fn firestore(&self) -> Option<crate::firestore::FirestoreLink> {
+        match &*self.read_link() {
+            Link::Firestore(link) => Some(link.clone()),
+            _ => None,
         }
     }
 
@@ -375,7 +399,7 @@ impl DatabaseSession {
     pub(crate) fn mysql(&self) -> Option<crate::mysql::MysqlLink> {
         match &*self.read_link() {
             Link::Mysql(link) => Some(link.clone()),
-            Link::Postgres(_) | Link::Sqlite(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) | Link::Oracle(_) | Link::D1(_) => None,
+            Link::Postgres(_) | Link::Sqlite(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) | Link::Oracle(_) | Link::D1(_) | Link::Firestore(_) => None,
         }
     }
 
@@ -387,14 +411,14 @@ impl DatabaseSession {
             Engine::Mssql => crate::rows::Dialect::Mssql,
             Engine::Oracle => crate::rows::Dialect::Oracle,
             // Redis, MongoDB and Cassandra have their own paths; nothing asks for their dialect.
-            Engine::Redis | Engine::Mongo | Engine::Cassandra => crate::rows::Dialect::Postgres,
+            Engine::Redis | Engine::Mongo | Engine::Cassandra | Engine::Firestore => crate::rows::Dialect::Postgres,
         }
     }
 
     pub(crate) fn tls(&self) -> Option<postgres_native_tls::MakeTlsConnector> {
         match &*self.read_link() {
             Link::Postgres(link) => link.tls.clone(),
-            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) | Link::Oracle(_) | Link::D1(_) => None,
+            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) | Link::Oracle(_) | Link::D1(_) | Link::Firestore(_) => None,
         }
     }
 
@@ -425,6 +449,7 @@ async fn open_link(settings: &ConnectionSettings) -> Result<Link, DatabaseError>
         Engine::Cassandra => crate::cassandra::CassandraLink::open(settings).await.map(Link::Cassandra),
         Engine::Oracle => crate::oracle::OracleLink::open(settings).await.map(Link::Oracle),
         Engine::D1 => crate::d1::D1Link::open(settings).await.map(Link::D1),
+        Engine::Firestore => crate::firestore::FirestoreLink::open(settings).await.map(Link::Firestore),
     }
 }
 

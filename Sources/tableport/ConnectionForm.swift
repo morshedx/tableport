@@ -60,8 +60,8 @@ struct ConnectionForm: View {
         self.store = store
         self.onClose = onClose
         _engine = State(initialValue: engine)
-        if engine.isSqlite {
-            // A file or a URL has no server defaults.
+        if engine.isSqlite || engine == .firestore {
+            // A file or a URL has no server defaults; Firestore's host is the emulator.
             _host = State(initialValue: "")
             _database = State(initialValue: "")
             _user = State(initialValue: "")
@@ -110,6 +110,8 @@ struct ConnectionForm: View {
     }
 
     private var isServerComplete: Bool {
+        // Firestore needs the project, and a key unless it is the emulator.
+        if engine == .firestore { return !trimmed(user).isEmpty && (!trimmed(password).isEmpty || !trimmed(host).isEmpty) }
         // D1 needs the account, the database and a token.
         if engine == .d1 { return ![user, database, password].contains { trimmed($0).isEmpty } }
         if engine.isSqlite { return !trimmed(database).isEmpty }
@@ -212,7 +214,8 @@ struct ConnectionForm: View {
 
     /// A file needs no SSH tunnel; only Oracle needs a client library.
     private var tabs: [FormTab] {
-        if engine.isSqlite { return [.connection, .access] }
+        // A file, and the HTTP engines, need no SSH tunnel.
+        if engine.isSqlite || engine == .firestore { return [.connection, .access] }
         if engine == .oracle { return [.connection, .client, .ssh, .access] }
         return [.connection, .ssh, .access]
     }
@@ -237,6 +240,7 @@ struct ConnectionForm: View {
         case .sqlite: sqliteTab
         case .libsql: libsqlTab
         case .d1: d1Tab
+        case .firestore: firestoreTab
         case .postgres, .mysql, .redis, .mongo, .mssql, .cassandra, .oracle: serverTab
         }
     }
@@ -266,6 +270,68 @@ struct ConnectionForm: View {
     }
 
     /// A libSQL server or Turso database: its URL and auth token.
+    /// Firestore: the project, the database, and a service account's key,
+    /// or the emulator's address instead of a key.
+    private var firestoreTab: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            FormCard("Connection") {
+                FormRow("Name") {
+                    TextField("Name", text: $name, prompt: Text("My database"))
+                }
+                FormRow("Tag") {
+                    tagChips
+                }
+                SwitchRow("Read-only", hint: "Browse and query, never change data. TablePort runs only reads.", isOn: $readOnly)
+            }
+            FormCard("Database") {
+                FormRow("Project ID") {
+                    TextField("Project ID", text: $user, prompt: Text("from the key, or my-project"))
+                }
+                FormRow("Database") {
+                    TextField("Database", text: $database, prompt: Text("(default)"))
+                }
+                FormRow("Key") {
+                    HStack(spacing: 6) {
+                        Text(firestoreKeyLabel)
+                            .foregroundStyle(password.isEmpty ? Theme.inkSecondary : Theme.ink)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Choose…", action: chooseFirestoreKey)
+                    }
+                }
+                FormRow("Emulator") {
+                    TextField("Emulator", text: $host, prompt: Text("none, or 127.0.0.1:8080"))
+                }
+            }
+            Text("Create a key under IAM → Service accounts → Keys in the Google Cloud console. TablePort keeps it in the Keychain. The emulator needs no key.")
+                .font(Theme.meta)
+                .foregroundStyle(Theme.inkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The key's service account, as its JSON names it.
+    private var firestoreKeyLabel: String {
+        guard !password.isEmpty else { return "none" }
+        let key = (try? JSONSerialization.jsonObject(with: Data(password.utf8))) as? [String: Any]
+        return key?["client_email"] as? String ?? "a key that isn't a service account's"
+    }
+
+    private func chooseFirestoreKey() {
+        let panel = NSOpenPanel()
+        panel.message = "Choose the service account's JSON key"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url, let text = try? String(contentsOf: url, encoding: .utf8) else { return }
+        password = text
+        // The key names its project.
+        if trimmed(user).isEmpty,
+           let key = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any],
+           let project = key["project_id"] as? String {
+            user = project
+        }
+    }
+
     /// Cloudflare D1: the account and database IDs, and an API token.
     private var d1Tab: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -433,6 +499,11 @@ struct ConnectionForm: View {
             if let warning = fields.loginWarning {
                 loginAccessWarning(warning)
             }
+            if engine == .firestore {
+                Label("For AI access, a service account with the Cloud Datastore Viewer role only is safest.", systemImage: "info.circle")
+                    .font(Theme.meta)
+                    .foregroundStyle(Theme.inkSecondary)
+            }
             if engine == .d1 {
                 Label("For AI access, a token with D1 Read only is safest.", systemImage: "info.circle")
                     .font(Theme.meta)
@@ -494,7 +565,7 @@ struct ConnectionForm: View {
             }
             if isNew {
                 Picker("Database", selection: $engine) {
-                    ForEach([Engine.postgres, .mysql, .mssql, .oracle, .sqlite, .libsql, .d1, .redis, .mongo, .cassandra], id: \.self) { engine in
+                    ForEach([Engine.postgres, .mysql, .mssql, .oracle, .sqlite, .libsql, .d1, .redis, .mongo, .firestore, .cassandra], id: \.self) { engine in
                         Text(engine == .mysql ? "MySQL / MariaDB" : engine == .libsql ? "libSQL / Turso" : engine.label).tag(engine)
                     }
                 }
@@ -518,7 +589,7 @@ struct ConnectionForm: View {
         case .mssql: ("1433", "sa", "")
         case .cassandra: ("9042", "", "")
         case .oracle: ("1521", "system", "FREEPDB1")
-        case .sqlite, .libsql, .d1: ("", "", "")
+        case .sqlite, .libsql, .d1, .firestore: ("", "", "")
         }
     }
 
@@ -529,7 +600,8 @@ struct ConnectionForm: View {
         let before = Self.defaults(old)
         let after = Self.defaults(engine)
         if !tabs.contains(tab) { tab = .connection }
-        if engine.isSqlite {
+        // Firestore's host is the emulator's: "localhost" there would mean the emulator.
+        if engine.isSqlite || engine == .firestore {
             if host == "localhost" { host = "" }
             if tab == .ssh { tab = .connection }
         } else if trimmed(host).isEmpty {
@@ -549,6 +621,10 @@ struct ConnectionForm: View {
         if engine == .sqlite {
             let file = trimmed(database).isEmpty ? "choose a file" : (trimmed(database) as NSString).lastPathComponent
             return "SQLite · \(file)"
+        }
+        if engine == .firestore {
+            if !trimmed(host).isEmpty { return "Firestore emulator · \(trimmed(host))" }
+            return "Firestore · \(trimmed(user).isEmpty ? "project ID" : trimmed(user))"
         }
         if engine == .d1 {
             return "Cloudflare D1 · \(trimmed(database).isEmpty ? "database ID" : trimmed(database))"
@@ -808,6 +884,11 @@ struct ConnectionForm: View {
 
     /// The form's values as the core's settings, secrets included.
     private func settings() -> ConnectionSettings? {
+        if engine == .firestore {
+            return ConnectionSettings(host: trimmed(host), port: 0, database: trimmed(database), user: trimmed(user),
+                                      password: password.isEmpty ? nil : password, tls: .verifyFull, ssh: nil, readOnly: readOnly,
+                                      engine: .firestore)
+        }
         if engine == .d1 {
             return ConnectionSettings(host: "", port: 0, database: trimmed(database), user: trimmed(user),
                                       password: password.isEmpty ? nil : password, tls: .verifyFull, ssh: nil, readOnly: readOnly,
@@ -869,7 +950,7 @@ struct ConnectionForm: View {
 
     private func save() {
         if engine == .sqlite { return saveFile() }
-        if engine == .libsql || engine == .d1 { return saveRemote() }
+        if engine == .libsql || engine == .d1 || engine == .firestore { return saveRemote() }
         guard let port = serverPort else { return }
         var connection = SavedConnection(
             name: trimmed(name), host: trimmed(host), port: port,
@@ -907,9 +988,10 @@ struct ConnectionForm: View {
 
     /// A libSQL connection: the URL, and the token in the Keychain.
     private func saveRemote() {
-        // D1 keeps its account ID as the user; libSQL has none.
-        var connection = SavedConnection(name: trimmed(name), host: "", port: 0, database: trimmed(database),
-                                         user: engine == .d1 ? trimmed(user) : "", tag: tag, tls: engine == .d1 ? .verifyFull : .disable)
+        // D1 keeps its account ID as the user, Firestore its project and the
+        // emulator as host; libSQL has neither.
+        var connection = SavedConnection(name: trimmed(name), host: engine == .firestore ? trimmed(host) : "", port: 0, database: trimmed(database),
+                                         user: engine == .libsql ? "" : trimmed(user), tag: tag, tls: engine == .libsql ? .disable : .verifyFull)
         connection.engine = engine
         connection.readOnly = readOnly
         connection.aiAccess = aiAccess
@@ -1210,7 +1292,7 @@ private struct EngineFields {
                          readOnlyHint: "Browse and query, never change data. TablePort runs only statements that read.",
                          loginWarning: ("AI tools can read every keyspace this login can read",
                                         "A CQL query can name any keyspace. To limit what AI tools see, connect with a Cassandra role that has rights only to the keyspaces you want to share."))
-        case .sqlite, .libsql, .d1:
+        case .sqlite, .libsql, .d1, .firestore:
             // Their own tabs, without server fields or a URL bar.
             EngineFields(databaseIsOptional: false)
         }

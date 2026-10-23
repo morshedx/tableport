@@ -980,7 +980,7 @@ impl ScanPlan {
 
 /// One filter on one value, as text: case-insensitive matches, and numbers
 /// compared as numbers when both sides are numbers.
-fn compare(cell: Option<&str>, operator: FilterOperator, value: &str) -> bool {
+pub(crate) fn compare(cell: Option<&str>, operator: FilterOperator, value: &str) -> bool {
     let lower = |text: &str| text.to_lowercase();
     let order = |cell: &str| match (cell.parse::<f64>(), value.parse::<f64>()) {
         (Ok(left), Ok(right)) => left.partial_cmp(&right),
