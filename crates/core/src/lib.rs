@@ -8,6 +8,7 @@
 mod cassandra;
 mod changes;
 mod completion;
+mod d1;
 mod error;
 mod export;
 mod mcp;

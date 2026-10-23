@@ -49,6 +49,7 @@ struct SavedConnection: Codable, Identifiable, Hashable {
     var subtitle: String {
         if engine == .sqlite { return (database as NSString).abbreviatingWithTildeInPath }
         if engine == .libsql { return libsqlHost }
+        if engine == .d1 { return "Cloudflare D1 · \(database)" }
         if engine == .mongo { return database.isEmpty ? displayHost : "\(displayHost) : \(database)" }
         return ssh.map { "\(host) : \(database) via \($0.host)" } ?? "\(host) : \(database)"
     }
@@ -80,6 +81,12 @@ struct SavedConnection: Codable, Identifiable, Hashable {
             return ConnectionSettings(host: "", port: 0, database: database, user: "",
                                       password: try Keychain.secret(.databasePassword, for: id), tls: .disable,
                                       ssh: nil, readOnly: readOnly, engine: .libsql)
+        }
+        if engine == .d1 {
+            // The account ID as user, the database ID, and an API token; always HTTPS to Cloudflare.
+            return ConnectionSettings(host: "", port: 0, database: database, user: user,
+                                      password: try Keychain.secret(.databasePassword, for: id), tls: .verifyFull,
+                                      ssh: nil, readOnly: readOnly, engine: .d1)
         }
         if engine == .sqlite {
             // A file: no server, login, TLS or tunnel.
@@ -118,6 +125,7 @@ extension Engine: Codable {
         case .sqlite: "sqlite"
         case .mysql: "mysql"
         case .libsql: "libsql"
+        case .d1: "d1"
         case .redis: "redis"
         case .mongo: "mongo"
         case .mssql: "mssql"
@@ -132,6 +140,7 @@ extension Engine: Codable {
         case "sqlite": .sqlite
         case "mysql": .mysql
         case "libsql": .libsql
+        case "d1": .d1
         case "redis": .redis
         case "mongo": .mongo
         case "mssql": .mssql
@@ -152,6 +161,7 @@ extension Engine: Codable {
         case .sqlite: "SQLite"
         case .mysql: "MySQL"
         case .libsql: "libSQL"
+        case .d1: "Cloudflare D1"
         case .redis: "Redis"
         case .mongo: "MongoDB"
         case .mssql: "SQL Server"
@@ -160,8 +170,8 @@ extension Engine: Codable {
         }
     }
 
-    /// SQLite's SQL and screens: a file, or a libSQL server.
-    var isSqlite: Bool { self == .sqlite || self == .libsql }
+    /// SQLite's SQL and screens: a file, a libSQL server, or Cloudflare D1.
+    var isSqlite: Bool { self == .sqlite || self == .libsql || self == .d1 }
 }
 
 /// The SSH part of a saved connection. Its password or key passphrase is in

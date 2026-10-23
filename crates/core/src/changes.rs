@@ -37,7 +37,7 @@ impl SqlFunction {
             (Self::CurrentDate, Engine::Cassandra) => "currentDate()",
             (Self::CurrentTime, Engine::Cassandra) => "currentTime()",
             (Self::Now, Engine::Postgres | Engine::Mysql | Engine::Redis | Engine::Mongo) => "now()",
-            (Self::Now, Engine::Sqlite | Engine::Libsql) => "CURRENT_TIMESTAMP",
+            (Self::Now, Engine::Sqlite | Engine::Libsql | Engine::D1) => "CURRENT_TIMESTAMP",
             (Self::CurrentDate, _) => "CURRENT_DATE",
             (Self::CurrentTime, _) => "CURRENT_TIME",
         }

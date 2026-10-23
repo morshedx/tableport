@@ -110,6 +110,8 @@ struct ConnectionForm: View {
     }
 
     private var isServerComplete: Bool {
+        // D1 needs the account, the database and a token.
+        if engine == .d1 { return ![user, database, password].contains { trimmed($0).isEmpty } }
         if engine.isSqlite { return !trimmed(database).isEmpty }
         // MySQL shows every database of the server; naming one is optional.
         let hasDatabase = fields.databaseIsOptional || isConnectionString || !trimmed(database).isEmpty
@@ -234,6 +236,7 @@ struct ConnectionForm: View {
         switch engine {
         case .sqlite: sqliteTab
         case .libsql: libsqlTab
+        case .d1: d1Tab
         case .postgres, .mysql, .redis, .mongo, .mssql, .cassandra, .oracle: serverTab
         }
     }
@@ -263,6 +266,53 @@ struct ConnectionForm: View {
     }
 
     /// A libSQL server or Turso database: its URL and auth token.
+    /// Cloudflare D1: the account and database IDs, and an API token.
+    private var d1Tab: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            FormCard("Connection") {
+                FormRow("Name") {
+                    TextField("Name", text: $name, prompt: Text("My database"))
+                }
+                FormRow("Tag") {
+                    tagChips
+                }
+                SwitchRow("Read-only", hint: "Browse and query, never change data. TablePort refuses every write.",
+                          isOn: $readOnly)
+            }
+            FormCard("Database") {
+                FormRow("Account ID") {
+                    TextField("Account ID", text: $user, prompt: Text("32 hex characters"))
+                }
+                FormRow("Database ID") {
+                    TextField("Database ID", text: $database, prompt: Text("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"))
+                }
+                FormRow("API token") {
+                    HStack(spacing: 6) {
+                        Group {
+                            if showsPassword {
+                                TextField("API token", text: $password, prompt: Text("with D1 Edit, or D1 Read"))
+                            } else {
+                                SecureField("API token", text: $password, prompt: Text("with D1 Edit, or D1 Read"))
+                            }
+                        }
+                        Button {
+                            showsPassword.toggle()
+                        } label: {
+                            Image(systemName: showsPassword ? "eye.slash" : "eye")
+                                .foregroundStyle(Theme.inkSecondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .help(showsPassword ? "Hide the token" : "Show the token")
+                    }
+                }
+            }
+            Text("The IDs are on the database's page in the Cloudflare dashboard, or from wrangler d1 list. Create the token under My Profile → API Tokens.")
+                .font(Theme.meta)
+                .foregroundStyle(Theme.inkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private var libsqlTab: some View {
         VStack(alignment: .leading, spacing: 14) {
             FormCard("Connection") {
@@ -383,6 +433,11 @@ struct ConnectionForm: View {
             if let warning = fields.loginWarning {
                 loginAccessWarning(warning)
             }
+            if engine == .d1 {
+                Label("For AI access, a token with D1 Read only is safest.", systemImage: "info.circle")
+                    .font(Theme.meta)
+                    .foregroundStyle(Theme.inkSecondary)
+            }
             if engine == .libsql {
                 Label("For AI access, a read-only token is safest: turso db tokens create <database> --read-only.",
                       systemImage: "info.circle")
@@ -439,7 +494,7 @@ struct ConnectionForm: View {
             }
             if isNew {
                 Picker("Database", selection: $engine) {
-                    ForEach([Engine.postgres, .mysql, .mssql, .oracle, .sqlite, .libsql, .redis, .mongo, .cassandra], id: \.self) { engine in
+                    ForEach([Engine.postgres, .mysql, .mssql, .oracle, .sqlite, .libsql, .d1, .redis, .mongo, .cassandra], id: \.self) { engine in
                         Text(engine == .mysql ? "MySQL / MariaDB" : engine == .libsql ? "libSQL / Turso" : engine.label).tag(engine)
                     }
                 }
@@ -463,7 +518,7 @@ struct ConnectionForm: View {
         case .mssql: ("1433", "sa", "")
         case .cassandra: ("9042", "", "")
         case .oracle: ("1521", "system", "FREEPDB1")
-        case .sqlite, .libsql: ("", "", "")
+        case .sqlite, .libsql, .d1: ("", "", "")
         }
     }
 
@@ -494,6 +549,9 @@ struct ConnectionForm: View {
         if engine == .sqlite {
             let file = trimmed(database).isEmpty ? "choose a file" : (trimmed(database) as NSString).lastPathComponent
             return "SQLite · \(file)"
+        }
+        if engine == .d1 {
+            return "Cloudflare D1 · \(trimmed(database).isEmpty ? "database ID" : trimmed(database))"
         }
         if engine == .libsql {
             let host = URL(string: trimmed(database))?.host ?? (trimmed(database).isEmpty ? "enter a URL" : trimmed(database))
@@ -750,6 +808,11 @@ struct ConnectionForm: View {
 
     /// The form's values as the core's settings, secrets included.
     private func settings() -> ConnectionSettings? {
+        if engine == .d1 {
+            return ConnectionSettings(host: "", port: 0, database: trimmed(database), user: trimmed(user),
+                                      password: password.isEmpty ? nil : password, tls: .verifyFull, ssh: nil, readOnly: readOnly,
+                                      engine: .d1)
+        }
         if engine == .libsql {
             return ConnectionSettings(host: "", port: 0, database: trimmed(database), user: "",
                                       password: password.isEmpty ? nil : password, tls: .disable, ssh: nil, readOnly: readOnly,
@@ -806,7 +869,7 @@ struct ConnectionForm: View {
 
     private func save() {
         if engine == .sqlite { return saveFile() }
-        if engine == .libsql { return saveRemote() }
+        if engine == .libsql || engine == .d1 { return saveRemote() }
         guard let port = serverPort else { return }
         var connection = SavedConnection(
             name: trimmed(name), host: trimmed(host), port: port,
@@ -844,8 +907,10 @@ struct ConnectionForm: View {
 
     /// A libSQL connection: the URL, and the token in the Keychain.
     private func saveRemote() {
-        var connection = SavedConnection(name: trimmed(name), host: "", port: 0, database: trimmed(database), user: "", tag: tag, tls: .disable)
-        connection.engine = .libsql
+        // D1 keeps its account ID as the user; libSQL has none.
+        var connection = SavedConnection(name: trimmed(name), host: "", port: 0, database: trimmed(database),
+                                         user: engine == .d1 ? trimmed(user) : "", tag: tag, tls: engine == .d1 ? .verifyFull : .disable)
+        connection.engine = engine
         connection.readOnly = readOnly
         connection.aiAccess = aiAccess
         if case .edit(let existing) = target { connection.id = existing.id }
@@ -1130,7 +1195,9 @@ private struct EngineFields {
             EngineFields(databasePrompt: "0", userPrompt: "default", urlPrompt: "Paste a redis:// URL to fill the form",
                          readOnlyHint: "Browse and read, never change data. TablePort runs only commands that read.")
         case .mongo:
+            // MongoDB has no read-only session; TablePort checks each command.
             EngineFields(databasePrompt: "optional: every database is shown", urlPrompt: "Paste a mongodb:// URL to fill the form",
+                         readOnlyHint: "Browse and query, never change data. TablePort runs only commands that read.",
                          offersEveryDatabase: true)
         case .oracle:
             // No URL format: a whole connect descriptor goes in Host instead.
@@ -1143,7 +1210,7 @@ private struct EngineFields {
                          readOnlyHint: "Browse and query, never change data. TablePort runs only statements that read.",
                          loginWarning: ("AI tools can read every keyspace this login can read",
                                         "A CQL query can name any keyspace. To limit what AI tools see, connect with a Cassandra role that has rights only to the keyspaces you want to share."))
-        case .sqlite, .libsql:
+        case .sqlite, .libsql, .d1:
             // Their own tabs, without server fields or a URL bar.
             EngineFields(databaseIsOptional: false)
         }

@@ -5294,6 +5294,11 @@ public enum Engine: Equatable, Hashable {
      * hold a whole connect descriptor, (description=…).
      */
     case oracle
+    /**
+     * Cloudflare D1. `user` is the account ID, `database` the database ID
+     * and `password` an API token with D1 rights.
+     */
+    case d1
 
 
 
@@ -5332,6 +5337,8 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         case 8: return .cassandra
         
         case 9: return .oracle
+        
+        case 10: return .d1
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -5375,6 +5382,10 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         
         case .oracle:
             writeInt(&buf, Int32(9))
+        
+        
+        case .d1:
+            writeInt(&buf, Int32(10))
         
         }
     }

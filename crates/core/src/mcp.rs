@@ -367,6 +367,7 @@ fn engine_name(engine: crate::Engine) -> &'static str {
         crate::Engine::Mysql => "MySQL",
         crate::Engine::Sqlite => "SQLite",
         crate::Engine::Libsql => "libSQL",
+        crate::Engine::D1 => "Cloudflare D1",
         crate::Engine::Redis => "Redis",
         crate::Engine::Mongo => "MongoDB",
         crate::Engine::Mssql => "SQL Server",

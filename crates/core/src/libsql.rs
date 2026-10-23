@@ -467,12 +467,13 @@ fn base64_bytes(text: &str) -> Vec<u8> {
     out
 }
 
-/// A SQLite connection: a file on this Mac, or a libSQL server. The SQL,
+/// A SQLite connection: a file on this Mac, a libSQL server, or Cloudflare D1. The SQL,
 /// catalog and screens are the same; this passes each call to the right one.
 #[derive(Clone)]
 pub(crate) enum SqliteLike {
     File(crate::sqlite::SqliteLink),
     Remote(LibsqlLink),
+    D1(crate::d1::D1Link),
 }
 
 impl SqliteLike {
@@ -480,6 +481,7 @@ impl SqliteLike {
         match self {
             Self::File(link) => link.text_rows(sql).await,
             Self::Remote(link) => link.text_rows(sql).await,
+            Self::D1(link) => link.text_rows(sql).await,
         }
     }
 
@@ -487,6 +489,7 @@ impl SqliteLike {
         match self {
             Self::File(link) => link.execute(sql).await,
             Self::Remote(link) => link.execute(sql).await,
+            Self::D1(link) => link.execute(sql).await,
         }
     }
 
@@ -494,6 +497,7 @@ impl SqliteLike {
         match self {
             Self::File(link) => link.apply_checked(statements, checked).await,
             Self::Remote(link) => link.apply_checked(statements, checked).await,
+            Self::D1(link) => link.apply_checked(statements, checked).await,
         }
     }
 
@@ -501,6 +505,7 @@ impl SqliteLike {
         match self {
             Self::File(link) => link.rebuild(rebuild, schema).await,
             Self::Remote(link) => link.rebuild(rebuild, schema).await,
+            Self::D1(link) => link.rebuild(rebuild, schema).await,
         }
     }
 
@@ -508,6 +513,7 @@ impl SqliteLike {
         match self {
             Self::File(link) => link.run_query(sql, max_rows).await,
             Self::Remote(link) => link.run_query(sql, max_rows).await,
+            Self::D1(link) => link.run_query(sql, max_rows).await,
         }
     }
 
@@ -522,6 +528,7 @@ impl SqliteLike {
         match self {
             Self::File(link) => link.export(select, columns, relation, format, path).await,
             Self::Remote(link) => link.export(select, columns, relation, format, path).await,
+            Self::D1(link) => link.export(select, columns, relation, format, path).await,
         }
     }
 
@@ -529,6 +536,7 @@ impl SqliteLike {
         match self {
             Self::File(link) => link.json_rows(sql).await,
             Self::Remote(link) => link.json_rows(sql).await,
+            Self::D1(link) => link.json_rows(sql).await,
         }
     }
 
@@ -540,6 +548,7 @@ impl SqliteLike {
                 Ok(())
             }
             Self::Remote(_) => Err(DatabaseError::new("A libSQL server can't stop a running statement.")),
+            Self::D1(_) => Err(DatabaseError::new("D1 can't stop a running statement.")),
         }
     }
 }

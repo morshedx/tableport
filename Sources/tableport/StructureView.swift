@@ -503,7 +503,7 @@ private func commonColumnTypes(_ engine: Engine) -> [String] {
     case .cassandra:
         ["text", "int", "bigint", "uuid", "timeuuid", "timestamp", "date", "boolean", "decimal", "double", "blob",
          "list<text>", "set<text>", "map<text, text>"]
-    case .sqlite, .libsql:
+    case .sqlite, .libsql, .d1:
         ["INTEGER", "REAL", "TEXT", "BLOB", "NUMERIC"]
     case .redis, .mongo:
         []
@@ -556,7 +556,7 @@ struct NewTableSheet: View {
         self.workspace = workspace
         _schema = State(initialValue: workspace.sidebar.schema)
         switch workspace.session.engine() {
-        case .sqlite, .libsql:
+        case .sqlite, .libsql, .d1:
             // SQLite's INTEGER PRIMARY KEY numbers new rows itself.
             _rows = State(initialValue: [
                 Row(name: "id", columnType: "INTEGER", primaryKey: true, nullable: false),
@@ -932,7 +932,7 @@ struct StructureRules {
             // Column comments (MS_Description) aren't read or written yet.
             StructureRules(hasComments: false, commentLabel: "", defaultExample: "SYSDATETIME()",
                            typeChangeNote: "Changing the type converts every value; SQL Server refuses it while an index uses the column.")
-        case .sqlite, .libsql:
+        case .sqlite, .libsql, .d1:
             StructureRules(hasComments: false, commentLabel: "", defaultExample: "CURRENT_TIMESTAMP",
                            typeChangeNote: "SQLite can't change a type in place: TablePort rebuilds the table, keeping its rows.")
         case .oracle:

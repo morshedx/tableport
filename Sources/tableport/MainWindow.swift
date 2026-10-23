@@ -149,6 +149,7 @@ final class WorkspaceModel: ObservableObject {
         let settings = session.settings()
         if settings.engine == .sqlite { return (settings.database as NSString).abbreviatingWithTildeInPath }
         if settings.engine == .libsql { return settings.database }
+        if settings.engine == .d1 { return "Cloudflare D1 · \(settings.database)" }
         if settings.engine == .mongo {
             let host = settings.host.contains("://") ? SavedConnection.displayHost(of: settings.host) : "\(settings.host):\(settings.port)"
             return settings.database.isEmpty ? host : "\(host)/\(settings.database)"
@@ -702,6 +703,14 @@ private struct HeaderBar: View {
                     Text(model.connection.displayHost)
                 }
                 .help("\(model.connection.host):\(model.connection.port)")
+            } else if model.connection.engine == .d1 {
+                // One database, named by its ID.
+                HeaderChip {
+                    headerLucide("database")
+                } label: {
+                    Text("D1")
+                }
+                .help(model.connection.database)
             } else if model.connection.engine == .libsql {
                 // One database at one URL.
                 HeaderChip {

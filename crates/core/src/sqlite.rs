@@ -413,18 +413,25 @@ impl DatabaseSession {
     /// `main`, `temp` when it has tables, and attached databases, each with
     /// its tables and views. SQLite's own tables are left out.
     pub(crate) async fn sqlite_schemas(&self) -> Result<Vec<SchemaContents>, DatabaseError> {
-        let names: Vec<String> = self
-            .text_rows("SELECT name FROM pragma_database_list ORDER BY seq".into())
-            .await?
-            .into_iter()
-            .filter_map(|row| row.into_iter().next().flatten())
-            .collect();
+        // D1 has one database, and refuses pragmas outside its own list.
+        let is_d1 = self.engine() == crate::Engine::D1;
+        let names: Vec<String> = if is_d1 {
+            vec!["main".into()]
+        } else {
+            self.text_rows("SELECT name FROM pragma_database_list ORDER BY seq".into())
+                .await?
+                .into_iter()
+                .filter_map(|row| row.into_iter().next().flatten())
+                .collect()
+        };
+        // D1 keeps its own tables, named _cf_…, beside the user's.
+        let hidden = if is_d1 { " AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\'" } else { "" };
         let mut schemas = Vec::new();
         for name in names {
             let rows = self
                 .text_rows(format!(
                     "SELECT name, type FROM {}.sqlite_master \
-                     WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
+                     WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'{hidden} ORDER BY name",
                     quote_identifier(&name)
                 ))
                 .await?;

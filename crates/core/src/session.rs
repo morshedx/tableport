@@ -49,12 +49,15 @@ pub enum Engine {
     /// Oracle Database. `database` is the service name; `host` may instead
     /// hold a whole connect descriptor, (description=…).
     Oracle,
+    /// Cloudflare D1. `user` is the account ID, `database` the database ID
+    /// and `password` an API token with D1 rights.
+    D1,
 }
 
 impl Engine {
-    /// SQLite's SQL, catalog and screens: a file or a libSQL server.
+    /// SQLite's SQL, catalog and screens: a file, a libSQL server or D1.
     pub(crate) fn is_sqlite(self) -> bool {
-        matches!(self, Engine::Sqlite | Engine::Libsql)
+        matches!(self, Engine::Sqlite | Engine::Libsql | Engine::D1)
     }
 }
 
@@ -97,6 +100,8 @@ impl ConnectionSettings {
                     .unwrap_or_else(|| "Oracle".into())
             }
             Engine::Oracle => format!("{}:{}", self.host, self.port),
+            // The database ID's first part names it well enough in messages.
+            Engine::D1 => format!("D1 database {}", self.database.trim().split('-').next().unwrap_or_default()),
             Engine::Sqlite => std::path::Path::new(&self.database)
                 .file_name()
                 .map_or_else(|| self.database.clone(), |name| name.to_string_lossy().into_owned()),
@@ -129,6 +134,7 @@ enum Link {
     Mssql(crate::mssql::MssqlLink),
     Cassandra(crate::cassandra::CassandraLink),
     Oracle(crate::oracle::OracleLink),
+    D1(crate::d1::D1Link),
 }
 
 struct PgLink {
@@ -168,6 +174,7 @@ impl DatabaseSession {
             Link::Mssql(link) => link.version.clone(),
             Link::Cassandra(link) => link.version.clone(),
             Link::Oracle(link) => link.version.clone(),
+            Link::D1(link) => link.version.clone(),
         }
     }
 
@@ -238,6 +245,7 @@ impl DatabaseSession {
             Link::Mssql(link) => link.is_closed(),
             Link::Cassandra(link) => link.is_closed(),
             Link::Oracle(link) => link.is_closed(),
+            Link::D1(link) => link.is_closed(),
         }
     }
 
@@ -252,6 +260,7 @@ impl DatabaseSession {
             Link::Mssql(link) => link.close(),
             Link::Cassandra(link) => link.close(),
             Link::Oracle(link) => link.close(),
+            Link::D1(link) => link.close(),
         }
     }
 
@@ -306,7 +315,7 @@ impl DatabaseSession {
     pub(crate) fn client(&self) -> Result<Arc<Client>, DatabaseError> {
         match &*self.read_link() {
             Link::Postgres(link) => Ok(link.client.clone()),
-            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) | Link::Oracle(_) => {
+            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) | Link::Oracle(_) | Link::D1(_) => {
                 Err(DatabaseError::new("This needs a PostgreSQL connection."))
             }
         }
@@ -317,6 +326,7 @@ impl DatabaseSession {
         match &*self.read_link() {
             Link::Sqlite(link) => Some(crate::libsql::SqliteLike::File(link.clone())),
             Link::Libsql(link) => Some(crate::libsql::SqliteLike::Remote(link.clone())),
+            Link::D1(link) => Some(crate::libsql::SqliteLike::D1(link.clone())),
             Link::Postgres(_) | Link::Mysql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) | Link::Oracle(_) => None,
         }
     }
@@ -365,14 +375,14 @@ impl DatabaseSession {
     pub(crate) fn mysql(&self) -> Option<crate::mysql::MysqlLink> {
         match &*self.read_link() {
             Link::Mysql(link) => Some(link.clone()),
-            Link::Postgres(_) | Link::Sqlite(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) | Link::Oracle(_) => None,
+            Link::Postgres(_) | Link::Sqlite(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) | Link::Oracle(_) | Link::D1(_) => None,
         }
     }
 
     pub(crate) fn dialect(&self) -> crate::rows::Dialect {
         match self.settings.engine {
             Engine::Postgres => crate::rows::Dialect::Postgres,
-            Engine::Sqlite | Engine::Libsql => crate::rows::Dialect::Sqlite,
+            Engine::Sqlite | Engine::Libsql | Engine::D1 => crate::rows::Dialect::Sqlite,
             Engine::Mysql => crate::rows::Dialect::Mysql,
             Engine::Mssql => crate::rows::Dialect::Mssql,
             Engine::Oracle => crate::rows::Dialect::Oracle,
@@ -384,7 +394,7 @@ impl DatabaseSession {
     pub(crate) fn tls(&self) -> Option<postgres_native_tls::MakeTlsConnector> {
         match &*self.read_link() {
             Link::Postgres(link) => link.tls.clone(),
-            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) | Link::Oracle(_) => None,
+            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) | Link::Oracle(_) | Link::D1(_) => None,
         }
     }
 
@@ -414,6 +424,7 @@ async fn open_link(settings: &ConnectionSettings) -> Result<Link, DatabaseError>
         Engine::Mssql => crate::mssql::MssqlLink::open(settings).await.map(Link::Mssql),
         Engine::Cassandra => crate::cassandra::CassandraLink::open(settings).await.map(Link::Cassandra),
         Engine::Oracle => crate::oracle::OracleLink::open(settings).await.map(Link::Oracle),
+        Engine::D1 => crate::d1::D1Link::open(settings).await.map(Link::D1),
     }
 }
 

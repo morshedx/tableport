@@ -311,7 +311,7 @@ pub fn truncate_sql(relation: Relation, restart_identity: bool, cascade: bool, e
     // SQLite has no TRUNCATE; DELETE without WHERE empties the table quickly.
     match engine {
         crate::Engine::Mongo => return crate::mongo::shell_command(&relation, "deleteMany({})"),
-        crate::Engine::Sqlite | crate::Engine::Libsql => return format!("DELETE FROM {};", relation.quoted_name()),
+        crate::Engine::Sqlite | crate::Engine::Libsql | crate::Engine::D1 => return format!("DELETE FROM {};", relation.quoted_name()),
         // TRUNCATE restarts AUTO_INCREMENT and IDENTITY on its own, and has no CASCADE.
         crate::Engine::Mysql | crate::Engine::Mssql | crate::Engine::Oracle => return format!("TRUNCATE TABLE {};", relation.quoted_name()),
         crate::Engine::Cassandra => return format!("TRUNCATE {};", relation.quoted_name()),

@@ -53,7 +53,7 @@ pub struct TableStructure {
 impl DatabaseSession {
     pub async fn structure(&self, relation: Relation) -> Result<TableStructure, DatabaseError> {
         match self.engine() {
-            Engine::Sqlite | Engine::Libsql => return self.sqlite_structure(&relation).await,
+            Engine::Sqlite | Engine::Libsql | Engine::D1 => return self.sqlite_structure(&relation).await,
             Engine::Mysql => return self.mysql_structure(&relation).await,
             Engine::Mssql => return self.mssql_structure(&relation).await,
             Engine::Cassandra => return self.cassandra_structure(&relation).await,
@@ -190,7 +190,7 @@ pub(crate) const REFERENTIAL_ACTIONS: &[&str] = &["NO ACTION", "RESTRICT", "CASC
 #[uniffi::export]
 pub fn structure_change_sql(relation: Relation, change: StructureChange, engine: Engine) -> Result<Vec<String>, DatabaseError> {
     match engine {
-        Engine::Sqlite | Engine::Libsql => return sqlite_structure_change_sql(&relation, change),
+        Engine::Sqlite | Engine::Libsql | Engine::D1 => return sqlite_structure_change_sql(&relation, change),
         Engine::Mysql => return crate::mysql::structure_change_sql(&relation, &change, None),
         Engine::Mssql => return crate::mssql::structure_change_sql(&relation, &change, &Default::default()),
         // Without the table's key; the session's version reads it.
