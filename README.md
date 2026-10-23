@@ -49,7 +49,7 @@ switches between large tables faster than TablePlus in our tests.
 |---|---|
 | ![Query editor running a saved query, with results below](docs/screenshots/query.png) | ![Cell editor with formatted JSON](docs/screenshots/cell-editor.png) |
 
-![Connections window with local, staging, production and development connections](docs/screenshots/connections.png)
+![Connections window with PostgreSQL, MySQL, Redis, MongoDB and SQLite connections](docs/screenshots/connections.png)
 
 All screenshots use a made-up demo database.
 
