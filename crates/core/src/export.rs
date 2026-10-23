@@ -60,6 +60,9 @@ impl DatabaseSession {
         if let Some(link) = self.mysql() {
             return on_runtime(async move { link.export(select, columns, relation, format, path).await }).await;
         }
+        if let Some(link) = self.mssql() {
+            return on_runtime(async move { link.export(select, columns, relation, format, path).await }).await;
+        }
         let client = self.client()?;
         let endpoint = self.settings().endpoint();
         on_runtime(async move {
@@ -155,7 +158,7 @@ impl DatabaseSession {
             return self.mongo_full_rows(relation, columns, keys).await;
         }
         let dialect = self.dialect();
-        let key_list = primary_key.iter().map(|name| dialect.text(&quote_identifier(name))).collect::<Vec<_>>().join(", ");
+        let key_list = primary_key.iter().map(|name| dialect.key_text(&quote_identifier(name))).collect::<Vec<_>>().join(", ");
         let value_list =
             columns.iter().map(|column| dialect.full_text(&quote_identifier(&column.name), &column.column_type)).collect::<Vec<_>>().join(", ");
         let sql = format!(
@@ -191,7 +194,18 @@ fn select_sql(
     let select_list = if columns.is_empty() {
         "*".to_string()
     } else {
-        columns.iter().map(|column| quote_identifier(&column.name)).collect::<Vec<_>>().join(", ")
+        columns
+            .iter()
+            .map(|column| {
+                let name = quote_identifier(&column.name);
+                // The driver can't read SQL Server's CLR types; they go as text.
+                match dialect {
+                    Dialect::Mssql => format!("{} AS {name}", dialect.full_text(&name, &column.column_type)),
+                    _ => name,
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     let mut sql = format!("SELECT {select_list} FROM {}", relation.quoted_name());
     match scope {
@@ -203,14 +217,17 @@ fn select_sql(
         }
         ExportScope::All | ExportScope::Page { .. } => sql += &where_clause(filters, columns, dialect)?,
     }
+    let mut ordered = true;
     if let Some(sort) = sort {
         sql += &format!(" ORDER BY {} {}", quote_identifier(&sort.column), if sort.ascending { "ASC" } else { "DESC" });
     } else if !primary_key.is_empty() {
         let key = primary_key.iter().map(|name| quote_identifier(name)).collect::<Vec<_>>().join(", ");
         sql += &format!(" ORDER BY {key}");
+    } else {
+        ordered = false;
     }
     if let ExportScope::Page { offset, limit } = scope {
-        sql += &format!(" LIMIT {limit} OFFSET {offset}");
+        sql += &dialect.page(ordered, *offset, *limit);
     }
     Ok(sql)
 }
@@ -219,7 +236,25 @@ fn select_sql(
 /// holds the keys.
 fn keys_condition(primary_key: &[String], keys: &[Vec<String>], dialect: Dialect) -> Result<String, DatabaseError> {
     if keys.is_empty() {
-        return Ok("false".to_string());
+        return Ok("1 = 0".to_string());
+    }
+    // SQL Server has no row values: (a = 1 AND b = 2) OR …, each typed.
+    if dialect == Dialect::Mssql {
+        let rows = keys
+            .iter()
+            .map(|key| {
+                if key.len() != primary_key.len() {
+                    return Err(DatabaseError::new("A row key doesn't match the primary key."));
+                }
+                let parts = primary_key
+                    .iter()
+                    .zip(key)
+                    .map(|(name, value)| Ok(format!("{} = {}", quote_identifier(name), dialect.literal(value)?)))
+                    .collect::<Result<Vec<_>, DatabaseError>>()?;
+                Ok(format!("({})", parts.join(" AND ")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(format!("({})", rows.join(" OR ")));
     }
     let columns = primary_key.iter().map(|name| dialect.text(&quote_identifier(name))).collect::<Vec<_>>().join(", ");
     let tuples = keys

@@ -40,6 +40,9 @@ pub enum Engine {
     /// MongoDB. `host` is a host name, or a whole connection string
     /// (mongodb://, mongodb+srv:// for Atlas) without its password.
     Mongo,
+    /// SQL Server or Azure SQL. `database` is optional: the login's default
+    /// database is used without it.
+    Mssql,
 }
 
 impl Engine {
@@ -71,7 +74,7 @@ impl ConnectionSettings {
     /// Where the connection goes, for messages: "host:port", or the file name.
     pub(crate) fn endpoint(&self) -> String {
         match self.engine {
-            Engine::Postgres | Engine::Mysql | Engine::Redis => format!("{}:{}", self.host, self.port),
+            Engine::Postgres | Engine::Mysql | Engine::Redis | Engine::Mssql => format!("{}:{}", self.host, self.port),
             // A connection string's hosts: mongodb+srv://user@cluster0.example.net/db → cluster0.example.net.
             Engine::Mongo if self.host.contains("://") => {
                 let rest = self.host.split_once("://").map_or(self.host.as_str(), |(_, rest)| rest);
@@ -108,6 +111,7 @@ enum Link {
     Libsql(crate::libsql::LibsqlLink),
     Redis(crate::redis::RedisLink),
     Mongo(crate::mongo::MongoLink),
+    Mssql(crate::mssql::MssqlLink),
 }
 
 struct PgLink {
@@ -144,6 +148,7 @@ impl DatabaseSession {
             Link::Libsql(link) => link.version.clone(),
             Link::Redis(link) => link.version.clone(),
             Link::Mongo(link) => link.version.clone(),
+            Link::Mssql(link) => link.version.clone(),
         }
     }
 
@@ -177,6 +182,9 @@ impl DatabaseSession {
         if let Ok(link) = self.mongo() {
             return on_runtime(async move { link.ping().await }).await;
         }
+        if let Some(link) = self.mssql() {
+            return on_runtime(async move { link.ping().await }).await;
+        }
         let client = self.client()?;
         let endpoint = self.settings.endpoint();
         on_runtime(async move {
@@ -202,6 +210,7 @@ impl DatabaseSession {
             Link::Libsql(link) => link.is_closed(),
             Link::Redis(link) => link.is_closed(),
             Link::Mongo(link) => link.is_closed(),
+            Link::Mssql(link) => link.is_closed(),
         }
     }
 
@@ -213,6 +222,7 @@ impl DatabaseSession {
             Link::Libsql(link) => link.close(),
             Link::Redis(link) => link.close(),
             Link::Mongo(link) => link.close(),
+            Link::Mssql(link) => link.close(),
         }
     }
 
@@ -227,6 +237,9 @@ impl DatabaseSession {
         }
         if settings_engine(self) == Engine::Mongo {
             return self.mongo_run(sql, 0).await.map(|_| ());
+        }
+        if let Some(link) = self.mssql() {
+            return on_runtime(async move { link.execute(sql).await }).await;
         }
         let client = self.client()?;
         let endpoint = self.settings.endpoint();
@@ -258,7 +271,7 @@ impl DatabaseSession {
     pub(crate) fn client(&self) -> Result<Arc<Client>, DatabaseError> {
         match &*self.read_link() {
             Link::Postgres(link) => Ok(link.client.clone()),
-            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) => {
+            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) => {
                 Err(DatabaseError::new("This needs a PostgreSQL connection."))
             }
         }
@@ -269,7 +282,7 @@ impl DatabaseSession {
         match &*self.read_link() {
             Link::Sqlite(link) => Some(crate::libsql::SqliteLike::File(link.clone())),
             Link::Libsql(link) => Some(crate::libsql::SqliteLike::Remote(link.clone())),
-            Link::Postgres(_) | Link::Mysql(_) | Link::Redis(_) | Link::Mongo(_) => None,
+            Link::Postgres(_) | Link::Mysql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) => None,
         }
     }
 
@@ -289,11 +302,19 @@ impl DatabaseSession {
         }
     }
 
+    /// The SQL Server link, when the connection is to SQL Server or Azure SQL.
+    pub(crate) fn mssql(&self) -> Option<crate::mssql::MssqlLink> {
+        match &*self.read_link() {
+            Link::Mssql(link) => Some(link.clone()),
+            _ => None,
+        }
+    }
+
     /// The MySQL link, when the connection is to MySQL or MariaDB.
     pub(crate) fn mysql(&self) -> Option<crate::mysql::MysqlLink> {
         match &*self.read_link() {
             Link::Mysql(link) => Some(link.clone()),
-            Link::Postgres(_) | Link::Sqlite(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) => None,
+            Link::Postgres(_) | Link::Sqlite(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) => None,
         }
     }
 
@@ -302,6 +323,7 @@ impl DatabaseSession {
             Engine::Postgres => crate::rows::Dialect::Postgres,
             Engine::Sqlite | Engine::Libsql => crate::rows::Dialect::Sqlite,
             Engine::Mysql => crate::rows::Dialect::Mysql,
+            Engine::Mssql => crate::rows::Dialect::Mssql,
             // Redis and MongoDB have no SQL; nothing asks for their dialect.
             Engine::Redis | Engine::Mongo => crate::rows::Dialect::Postgres,
         }
@@ -310,7 +332,7 @@ impl DatabaseSession {
     pub(crate) fn tls(&self) -> Option<postgres_native_tls::MakeTlsConnector> {
         match &*self.read_link() {
             Link::Postgres(link) => link.tls.clone(),
-            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) => None,
+            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) => None,
         }
     }
 
@@ -337,6 +359,7 @@ async fn open_link(settings: &ConnectionSettings) -> Result<Link, DatabaseError>
         Engine::Libsql => crate::libsql::LibsqlLink::open(settings).await.map(Link::Libsql),
         Engine::Redis => crate::redis::RedisLink::open(settings).await.map(Link::Redis),
         Engine::Mongo => crate::mongo::MongoLink::open(settings).await.map(Link::Mongo),
+        Engine::Mssql => crate::mssql::MssqlLink::open(settings).await.map(Link::Mssql),
     }
 }
 
@@ -419,6 +442,9 @@ impl DatabaseSession {
             return on_runtime(async move { link.text_rows(sql).await }).await;
         }
         if let Some(link) = self.mysql() {
+            return on_runtime(async move { link.text_rows(sql).await }).await;
+        }
+        if let Some(link) = self.mssql() {
             return on_runtime(async move { link.text_rows(sql).await }).await;
         }
         let client = self.client()?;

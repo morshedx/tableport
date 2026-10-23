@@ -55,6 +55,7 @@ impl DatabaseSession {
         match self.engine() {
             Engine::Sqlite | Engine::Libsql => return self.sqlite_structure(&relation).await,
             Engine::Mysql => return self.mysql_structure(&relation).await,
+            Engine::Mssql => return self.mssql_structure(&relation).await,
             Engine::Redis => return Err(DatabaseError::new("Redis keys have no table structure.")),
             Engine::Mongo => return self.mongo_structure(relation).await,
             Engine::Postgres => {}
@@ -167,10 +168,13 @@ pub enum StructureChange {
     DropConstraint { name: String, cascade: bool },
 }
 
-/// Identity, generated and MySQL AUTO_INCREMENT columns show how they get
-/// their value where a default would be; that text isn't a DEFAULT expression.
+/// Identity, generated, MySQL AUTO_INCREMENT and SQL Server IDENTITY and
+/// computed columns show how they get their value where a default would
+/// be; that text isn't a DEFAULT expression.
 pub(crate) fn is_generated(default_value: &Option<String>) -> bool {
-    default_value.as_deref().is_some_and(|text| text.starts_with("GENERATED ") || text == "AUTO_INCREMENT")
+    default_value.as_deref().is_some_and(|text| {
+        text.starts_with("GENERATED ") || text == "AUTO_INCREMENT" || text.starts_with("IDENTITY(") || text.starts_with("AS ")
+    })
 }
 
 pub(crate) fn non_empty(text: &Option<String>) -> Option<&str> {
@@ -186,6 +190,7 @@ pub fn structure_change_sql(relation: Relation, change: StructureChange, engine:
     match engine {
         Engine::Sqlite | Engine::Libsql => return sqlite_structure_change_sql(&relation, change),
         Engine::Mysql => return crate::mysql::structure_change_sql(&relation, &change, None),
+        Engine::Mssql => return crate::mssql::structure_change_sql(&relation, &change, &Default::default()),
         Engine::Redis => return Err(DatabaseError::new("Redis keys have no table structure.")),
         Engine::Mongo => return crate::mongo::structure_change_commands(&relation, &change),
         Engine::Postgres => {}
@@ -317,6 +322,9 @@ impl DatabaseSession {
         if self.engine() == Engine::Mongo {
             return self.mongo_apply_structure(relation, change).await;
         }
+        if self.engine() == Engine::Mssql {
+            return self.mssql_apply_structure(relation, change).await;
+        }
         if let Some(link) = self.mysql() {
             // MySQL commits each DDL statement on its own; most changes are one statement.
             let statements = self.structure_change_statements(relation, change).await?;
@@ -356,6 +364,9 @@ impl DatabaseSession {
         if self.engine() == Engine::Mysql {
             return self.mysql_structure_change_sql(&relation, change).await;
         }
+        if self.engine() == Engine::Mssql {
+            return self.mssql_structure_change_sql(&relation, change).await;
+        }
         structure_change_sql(relation, change, self.engine())
     }
 }
@@ -374,6 +385,9 @@ pub struct NewTableColumn {
 pub fn create_table_sql(schema: String, name: String, columns: Vec<NewTableColumn>, engine: Engine) -> Result<Vec<String>, DatabaseError> {
     if engine.is_sqlite() && columns.iter().any(|entry| non_empty(&entry.column.comment).is_some()) {
         return Err(DatabaseError::new("SQLite has no column comments."));
+    }
+    if engine == Engine::Mssql && columns.iter().any(|entry| non_empty(&entry.column.comment).is_some()) {
+        return Err(DatabaseError::new("Column comments on SQL Server aren't supported yet."));
     }
     let name = name.trim();
     if name.is_empty() {
@@ -409,6 +423,10 @@ pub fn create_table_sql(schema: String, name: String, columns: Vec<NewTableColum
         match non_empty(&column.default_value) {
             // MySQL numbers rows with a column attribute, not a default.
             Some("AUTO_INCREMENT") if engine == Engine::Mysql => definition += " AUTO_INCREMENT",
+            // SQL Server numbers rows with IDENTITY(seed, step), also not a default.
+            Some(identity) if engine == Engine::Mssql && identity.to_ascii_uppercase().starts_with("IDENTITY") => {
+                definition += &format!(" {identity}")
+            }
             Some(default) => definition += &format!(" DEFAULT {default}"),
             None => {}
         }

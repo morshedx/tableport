@@ -12,6 +12,7 @@ mod export;
 mod mcp;
 mod libsql;
 mod mongo;
+mod mssql;
 mod mysql;
 mod query;
 mod redis;

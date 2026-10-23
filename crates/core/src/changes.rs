@@ -27,6 +27,9 @@ pub enum SqlFunction {
 impl SqlFunction {
     fn sql(self, engine: Engine) -> &'static str {
         match (self, engine) {
+            (Self::Now, Engine::Mssql) => "SYSDATETIME()",
+            (Self::CurrentDate, Engine::Mssql) => "CAST(SYSDATETIME() AS date)",
+            (Self::CurrentTime, Engine::Mssql) => "CAST(SYSDATETIME() AS time)",
             (Self::Now, Engine::Postgres | Engine::Mysql | Engine::Redis | Engine::Mongo) => "now()",
             (Self::Now, Engine::Sqlite | Engine::Libsql) => "CURRENT_TIMESTAMP",
             (Self::CurrentDate, _) => "CURRENT_DATE",
@@ -121,11 +124,11 @@ pub fn changes_sql(
         statements.push(format!(
             "UPDATE {} SET {assignments} WHERE {}",
             relation.quoted_name(),
-            key_condition(primary_key, &update.key)?
+            key_condition(primary_key, &update.key, engine)?
         ));
     }
     for key in &changes.deletes {
-        statements.push(format!("DELETE FROM {} WHERE {}", relation.quoted_name(), key_condition(primary_key, key)?));
+        statements.push(format!("DELETE FROM {} WHERE {}", relation.quoted_name(), key_condition(primary_key, key, engine)?));
     }
     for row in &changes.inserts {
         statements.push(insert_sql(row, relation, columns, engine)?);
@@ -173,6 +176,9 @@ impl DatabaseSession {
         if let Some(link) = self.mysql() {
             return crate::on_runtime(async move { link.apply_checked(statements, checked).await }).await;
         }
+        if let Some(link) = self.mssql() {
+            return crate::on_runtime(async move { link.apply_checked(statements, checked).await }).await;
+        }
         self.execute(do_block(&statements, checked)?).await
     }
 }
@@ -197,7 +203,7 @@ fn do_block(statements: &[String], checked: usize) -> Result<String, DatabaseErr
 
 fn draft_sql(draft: Option<&CellDraft>, engine: Engine) -> Result<String, DatabaseError> {
     match draft {
-        Some(CellDraft::Value { text }) => quote_literal(text),
+        Some(CellDraft::Value { text }) => literal(text, engine),
         Some(CellDraft::Null) | None => Ok("NULL".to_string()),
         Some(CellDraft::Default) if engine.is_sqlite() => {
             Err(DatabaseError::new("SQLite can't set an existing value back to the column's default. Type the value instead."))
@@ -207,14 +213,23 @@ fn draft_sql(draft: Option<&CellDraft>, engine: Engine) -> Result<String, Databa
     }
 }
 
-fn key_condition(primary_key: &[String], key: &[String]) -> Result<String, DatabaseError> {
+/// A text literal; N'…' on SQL Server, which would otherwise turn text
+/// outside the database's code page into question marks.
+fn literal(text: &str, engine: Engine) -> Result<String, DatabaseError> {
+    match engine {
+        Engine::Mssql => crate::mssql::literal_text(text),
+        _ => quote_literal(text),
+    }
+}
+
+fn key_condition(primary_key: &[String], key: &[String], engine: Engine) -> Result<String, DatabaseError> {
     if primary_key.is_empty() || primary_key.len() != key.len() {
         return Err(DatabaseError::new("The row's primary key doesn't match the table's."));
     }
     Ok(primary_key
         .iter()
         .zip(key)
-        .map(|(column, value)| Ok(format!("{} = {}", quote_identifier(column), quote_literal(value)?)))
+        .map(|(column, value)| Ok(format!("{} = {}", quote_identifier(column), literal(value, engine)?)))
         .collect::<Result<Vec<_>, DatabaseError>>()?
         .join(" AND "))
 }

@@ -78,6 +78,7 @@ impl DatabaseSession {
         match self.engine() {
             crate::Engine::Sqlite | crate::Engine::Libsql => return self.sqlite_completer().await,
             crate::Engine::Mysql => return self.mysql_completer().await,
+            crate::Engine::Mssql => return self.mssql_completer().await,
             crate::Engine::Redis | crate::Engine::Mongo => return Err(DatabaseError::new("This connection has no SQL to complete.")),
             crate::Engine::Postgres => {}
         }
@@ -328,6 +329,54 @@ impl DatabaseSession {
         let mut search_path = vec![String::new()];
         search_path.extend(current.into_iter().filter_map(|row| row.into_iter().next().flatten()));
         Ok(Arc::new(Completer { relations, functions, schemas, search_path, backticks: true }))
+    }
+}
+
+impl DatabaseSession {
+    /// SQL Server's catalog: the current database's tables and views with
+    /// their columns. The user's default schema is searched for unqualified
+    /// names, then dbo, as SQL Server does.
+    async fn mssql_completer(&self) -> Result<Arc<Completer>, DatabaseError> {
+        let relation_rows = self
+            .text_rows(
+                "SELECT SCHEMA_NAME(o.schema_id), o.name, o.type, \
+                        (SELECT STRING_AGG(CAST(c.name AS nvarchar(max)), NCHAR(31)) WITHIN GROUP (ORDER BY c.column_id) \
+                         FROM sys.columns c WHERE c.object_id = o.object_id) \
+                 FROM sys.objects o WHERE o.type IN ('U', 'V') AND o.is_ms_shipped = 0 ORDER BY o.name"
+                    .into(),
+            )
+            .await?;
+        let relations = relation_rows
+            .into_iter()
+            .filter_map(|row| {
+                let [Some(schema), Some(name), Some(kind), columns] = <[Option<String>; 4]>::try_from(row).ok()? else {
+                    return None;
+                };
+                let kind = if kind.trim() == "V" { RelationKind::View } else { RelationKind::Table };
+                let columns = columns.map(|columns| columns.split('\u{1f}').map(str::to_string).collect()).unwrap_or_default();
+                Some(CatalogRelation { schema, name, kind, columns })
+            })
+            .collect();
+        let routine_rows = self
+            .text_rows("SELECT SCHEMA_NAME(schema_id), name FROM sys.objects WHERE type IN ('FN', 'IF', 'TF') AND is_ms_shipped = 0".into())
+            .await?;
+        let mut functions: Vec<(String, String)> =
+            crate::mssql::FUNCTIONS.iter().map(|name| (String::new(), name.to_string())).collect();
+        functions.extend(routine_rows.into_iter().filter_map(|row| {
+            let [Some(schema), Some(name)] = <[Option<String>; 2]>::try_from(row).ok()? else { return None };
+            Some((schema, name))
+        }));
+        functions.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        functions.dedup();
+        let schemas: Vec<String> = self.schemas().await?.into_iter().map(|schema| schema.name).collect();
+        let current = self.text_rows("SELECT SCHEMA_NAME()".into()).await?;
+        // Built-in functions belong to no schema; the empty schema finds them.
+        let mut search_path = vec![String::new()];
+        search_path.extend(current.into_iter().filter_map(|row| row.into_iter().next().flatten()));
+        if !search_path.iter().any(|schema| schema == "dbo") {
+            search_path.push("dbo".into());
+        }
+        Ok(Arc::new(Completer { relations, functions, schemas, search_path, backticks: false }))
     }
 }
 

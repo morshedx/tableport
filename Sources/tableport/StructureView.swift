@@ -416,12 +416,11 @@ private struct ColumnSheet: View {
     @State private var error: String?
 
 
-    /// Identity and generated columns show how they get their value in place
-    /// of a default; that can't be edited here.
-    /// Identity, generated and AUTO_INCREMENT columns: their value isn't a default.
+    /// Identity, generated, AUTO_INCREMENT and computed columns show how they
+    /// get their value in place of a default; that can't be edited here.
     private var isGenerated: Bool {
         guard let value = original?.defaultValue else { return false }
-        return value.hasPrefix("GENERATED ") || value == "AUTO_INCREMENT"
+        return value.hasPrefix("GENERATED ") || value == "AUTO_INCREMENT" || value.hasPrefix("IDENTITY(") || value.hasPrefix("AS (")
     }
 
     private var spec: ColumnSpec {
@@ -482,6 +481,9 @@ private func commonColumnTypes(_ engine: Engine) -> [String] {
     case .mysql:
         ["int", "bigint", "smallint", "tinyint(1)", "decimal(12,2)", "double", "varchar(255)", "text", "longtext",
          "date", "datetime", "timestamp", "time", "json", "blob", "enum('a','b')", "char(36)"]
+    case .mssql:
+        ["int", "bigint", "smallint", "bit", "decimal(12,2)", "float", "nvarchar(255)", "nvarchar(max)", "varchar(255)",
+         "date", "datetime2", "datetimeoffset", "time", "uniqueidentifier", "varbinary(max)"]
     case .sqlite, .libsql:
         ["INTEGER", "REAL", "TEXT", "BLOB", "NUMERIC"]
     case .redis, .mongo:
@@ -544,6 +546,11 @@ struct NewTableSheet: View {
             _rows = State(initialValue: [
                 Row(name: "id", columnType: "bigint", primaryKey: true, nullable: false, defaultValue: "AUTO_INCREMENT"),
                 Row(name: "", columnType: "varchar(255)", primaryKey: false, nullable: true),
+            ])
+        case .mssql:
+            _rows = State(initialValue: [
+                Row(name: "id", columnType: "bigint", primaryKey: true, nullable: false, defaultValue: "IDENTITY(1,1)"),
+                Row(name: "", columnType: "nvarchar(255)", primaryKey: false, nullable: true),
             ])
         case .postgres, .redis, .mongo:
             break

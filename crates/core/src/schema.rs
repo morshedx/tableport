@@ -71,6 +71,7 @@ impl DatabaseSession {
         match self.dialect() {
             Dialect::Sqlite => return Ok(vec![self.settings().database]),
             Dialect::Mysql => return Ok(self.mysql_schemas().await?.into_iter().map(|schema| schema.name).collect()),
+            Dialect::Mssql => return self.mssql_databases().await,
             Dialect::Postgres => {}
         }
         let rows = self
@@ -90,6 +91,7 @@ impl DatabaseSession {
         match self.dialect() {
             Dialect::Sqlite => return self.sqlite_schemas().await,
             Dialect::Mysql => return self.mysql_schemas().await,
+            Dialect::Mssql => return self.mssql_schemas().await,
             Dialect::Postgres => {}
         }
         let schema_rows = self
@@ -137,6 +139,7 @@ impl DatabaseSession {
         match self.dialect() {
             Dialect::Sqlite => return self.sqlite_primary_key(&relation).await,
             Dialect::Mysql => return self.mysql_primary_key(&relation).await,
+            Dialect::Mssql => return self.mssql_primary_key(&relation).await,
             Dialect::Postgres => {}
         }
         let rows = self
@@ -159,6 +162,7 @@ impl DatabaseSession {
         match self.dialect() {
             Dialect::Sqlite => return self.sqlite_foreign_keys(&relation).await,
             Dialect::Mysql => return self.mysql_foreign_keys(&relation).await,
+            Dialect::Mssql => return self.mssql_foreign_keys(&relation).await,
             Dialect::Postgres => {}
         }
         let rows = self
@@ -207,7 +211,7 @@ impl DatabaseSession {
     /// functions and those that extensions installed are left out.
     pub async fn routines(&self, schema: String) -> Result<Vec<Routine>, DatabaseError> {
         // SQLite has no stored functions.
-        // Stored routines on MySQL come later.
+        // Stored routines on MySQL and SQL Server come later.
         if self.dialect() != Dialect::Postgres {
             return Ok(Vec::new());
         }
@@ -250,6 +254,9 @@ pub fn qualified_name(relation: Relation, engine: crate::Engine) -> String {
     if engine == crate::Engine::Mysql {
         return format!("{}.{}", crate::mysql::backtick(&relation.schema), crate::mysql::backtick(&relation.name));
     }
+    if engine == crate::Engine::Mssql {
+        return format!("{}.{}", crate::mssql::bracket(&relation.schema), crate::mssql::bracket(&relation.name));
+    }
     relation.quoted_name()
 }
 
@@ -277,8 +284,8 @@ pub fn truncate_sql(relation: Relation, restart_identity: bool, cascade: bool, e
     match engine {
         crate::Engine::Mongo => return crate::mongo::shell_command(&relation, "deleteMany({})"),
         crate::Engine::Sqlite | crate::Engine::Libsql => return format!("DELETE FROM {};", relation.quoted_name()),
-        // TRUNCATE restarts AUTO_INCREMENT on its own, and has no CASCADE.
-        crate::Engine::Mysql => return format!("TRUNCATE TABLE {};", relation.quoted_name()),
+        // TRUNCATE restarts AUTO_INCREMENT and IDENTITY on its own, and has no CASCADE.
+        crate::Engine::Mysql | crate::Engine::Mssql => return format!("TRUNCATE TABLE {};", relation.quoted_name()),
         crate::Engine::Postgres | crate::Engine::Redis => {}
     }
     format!(

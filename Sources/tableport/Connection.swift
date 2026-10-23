@@ -116,6 +116,7 @@ extension Engine: Codable {
         case .libsql: "libsql"
         case .redis: "redis"
         case .mongo: "mongo"
+        case .mssql: "mssql"
         }
     }
 
@@ -127,6 +128,7 @@ extension Engine: Codable {
         case "libsql": .libsql
         case "redis": .redis
         case "mongo": .mongo
+        case "mssql": .mssql
         default: .postgres
         }
     }
@@ -144,6 +146,7 @@ extension Engine: Codable {
         case .libsql: "libSQL"
         case .redis: "Redis"
         case .mongo: "MongoDB"
+        case .mssql: "SQL Server"
         }
     }
 

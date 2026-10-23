@@ -112,6 +112,7 @@ impl DatabaseSession {
         match self.dialect() {
             Dialect::Sqlite => return self.sqlite_columns(&relation).await,
             Dialect::Mysql => return self.mysql_columns(&relation).await,
+            Dialect::Mssql => return self.mssql_columns(&relation).await,
             Dialect::Postgres => {}
         }
         let rows = self
@@ -173,6 +174,7 @@ impl DatabaseSession {
         };
         let mut sql = format!("SELECT {select_list} FROM {}", relation.quoted_name());
         sql += &where_clause(&filters, &columns, dialect)?;
+        let mut ordered = true;
         if let Some(sort) = &sort {
             sql += &format!(" ORDER BY {} {}", quote_identifier(&sort.column), if sort.ascending { "ASC" } else { "DESC" });
         } else if !primary_key.is_empty() {
@@ -180,8 +182,10 @@ impl DatabaseSession {
             // updated row to the end and makes pages overlap.
             let key = primary_key.iter().map(|column| quote_identifier(column)).collect::<Vec<_>>().join(", ");
             sql += &format!(" ORDER BY {key}");
+        } else {
+            ordered = false;
         }
-        sql += &format!(" LIMIT {limit} OFFSET {offset}");
+        sql += &dialect.page(ordered, offset, limit);
         let rows = self.text_rows(sql).await?;
         Ok(RowPage { rows, offset })
     }
@@ -197,6 +201,7 @@ impl DatabaseSession {
         match self.dialect() {
             Dialect::Sqlite => return self.row_count(relation, Vec::new(), Vec::new()).await.map(Some),
             Dialect::Mysql => return self.mysql_estimated_row_count(&relation).await,
+            Dialect::Mssql => return self.mssql_estimated_row_count(&relation).await,
             Dialect::Postgres => {}
         }
         let name = quote_literal(&relation.quoted_name())?;
@@ -227,7 +232,9 @@ impl DatabaseSession {
         if self.engine() == crate::Engine::Mongo {
             return self.mongo_count(relation, columns, filters).await;
         }
-        let mut sql = format!("SELECT count(*) FROM {}", relation.quoted_name());
+        // COUNT_BIG: SQL Server's count(*) is an int, too small for a big table.
+        let count = if self.dialect() == Dialect::Mssql { "COUNT_BIG(*)" } else { "count(*)" };
+        let mut sql = format!("SELECT {count} FROM {}", relation.quoted_name());
         sql += &where_clause(&filters, &columns, self.dialect())?;
         let rows = self.text_rows(sql).await?;
         rows.first()
@@ -245,6 +252,8 @@ pub(crate) enum Dialect {
     Sqlite,
     /// TablePort's own MySQL connection, in ANSI_QUOTES mode.
     Mysql,
+    /// TablePort's own SQL Server connection, with QUOTED_IDENTIFIER on.
+    Mssql,
 }
 
 impl Dialect {
@@ -254,6 +263,36 @@ impl Dialect {
             Dialect::Postgres => format!("{expression}::text"),
             Dialect::Sqlite => format!("CAST({expression} AS TEXT)"),
             Dialect::Mysql => format!("CAST({expression} AS CHAR)"),
+            Dialect::Mssql => format!("CAST({expression} AS nvarchar(max))"),
+        }
+    }
+
+    /// A text literal: SQL Server needs N'…' to keep text outside the
+    /// database's code page.
+    pub(crate) fn literal(self, text: &str) -> Result<String, DatabaseError> {
+        match self {
+            Dialect::Mssql => crate::mssql::literal_text(text),
+            _ => quote_literal(text),
+        }
+    }
+
+    /// A key column as the grid holds its values, for finding rows again.
+    /// SQL Server's values are turned into text by TablePort, not the server.
+    pub(crate) fn key_text(self, column: &str) -> String {
+        match self {
+            Dialect::Mssql => column.to_string(),
+            _ => self.text(column),
+        }
+    }
+
+    /// LIMIT and OFFSET, or SQL Server's OFFSET … FETCH, which needs an ORDER BY.
+    pub(crate) fn page(self, ordered: bool, offset: u64, limit: u64) -> String {
+        match self {
+            Dialect::Mssql => format!(
+                "{} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY",
+                if ordered { "" } else { " ORDER BY (SELECT NULL)" }
+            ),
+            _ => format!(" LIMIT {limit} OFFSET {offset}"),
         }
     }
 
@@ -268,6 +307,7 @@ impl Dialect {
             ),
             Dialect::Mysql if is_mysql_binary(column_type) => format!("LEFT(CONCAT('\\x', LOWER(HEX({column}))), {GRID_CELL_LIMIT})"),
             Dialect::Mysql => format!("LEFT(CAST({column} AS CHAR), {GRID_CELL_LIMIT})"),
+            Dialect::Mssql => crate::mssql::cell(column, column_type, Some(GRID_CELL_LIMIT)),
         }
     }
 
@@ -281,6 +321,7 @@ impl Dialect {
             }
             Dialect::Mysql if is_mysql_binary(column_type) => format!("CONCAT('\\x', LOWER(HEX({column})))"),
             Dialect::Mysql => format!("CAST({column} AS CHAR)"),
+            Dialect::Mssql => crate::mssql::cell(column, column_type, None),
         }
     }
 
@@ -290,7 +331,8 @@ impl Dialect {
         match self {
             Dialect::Postgres => format!("{text} {not}ILIKE {pattern}"),
             // SQLite's LIKE ignores case (for ASCII) and has no default escape.
-            Dialect::Sqlite | Dialect::Mysql => format!("{text} {not}LIKE {pattern} ESCAPE '\\'"),
+            // SQL Server's default collations ignore case too.
+            Dialect::Sqlite | Dialect::Mysql | Dialect::Mssql => format!("{text} {not}LIKE {pattern} ESCAPE '\\'"),
         }
     }
 
@@ -300,6 +342,8 @@ impl Dialect {
             Dialect::Postgres => format!("{left} IS DISTINCT FROM {right}"),
             Dialect::Sqlite => format!("{left} IS NOT {right}"),
             Dialect::Mysql => format!("NOT ({left} <=> {right})"),
+            // IS DISTINCT FROM is new in SQL Server 2022; INTERSECT treats NULLs as equal.
+            Dialect::Mssql => format!("NOT EXISTS (SELECT {left} INTERSECT SELECT {right})"),
         }
     }
 }
@@ -351,13 +395,15 @@ impl RowFilter {
                 Ok(format!("({})", condition(&quote_identifier(name), false, self.operator, &self.value, dialect)?))
             }
             FilterTarget::AnyColumn => {
-                if columns.is_empty() {
-                    return Ok("(false)".into());
-                }
                 let any = columns
                     .iter()
+                    .filter(|column| dialect != Dialect::Mssql || crate::mssql::is_searchable(&column.column_type))
                     .map(|column| condition(&quote_identifier(&column.name), true, self.operator, &self.value, dialect))
                     .collect::<Result<Vec<_>, _>>()?;
+                // 1 = 0 rather than false, which SQL Server lacks.
+                if any.is_empty() {
+                    return Ok("(1 = 0)".into());
+                }
                 Ok(format!("({})", any.join(" OR ")))
             }
         }
@@ -370,14 +416,14 @@ fn condition(column: &str, as_text: bool, operator: FilterOperator, value: &str,
     let typed = if as_text { text.clone() } else { column.to_string() };
     let pattern = |prefix: &str, suffix: &str| -> Result<String, DatabaseError> {
         let escaped = value.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
-        quote_literal(&format!("{prefix}{escaped}{suffix}"))
+        dialect.literal(&format!("{prefix}{escaped}{suffix}"))
     };
     let list = || -> Result<String, DatabaseError> {
         let items = value
             .split(',')
             .map(str::trim)
             .filter(|item| !item.is_empty())
-            .map(quote_literal)
+            .map(|item| dialect.literal(item))
             .collect::<Result<Vec<_>, _>>()?;
         if items.is_empty() {
             return Err(DatabaseError::new("IN needs at least one value, separated by commas."));
@@ -385,17 +431,17 @@ fn condition(column: &str, as_text: bool, operator: FilterOperator, value: &str,
         Ok(items.join(", "))
     };
     Ok(match operator {
-        FilterOperator::Equals => format!("{typed} = {}", quote_literal(value)?),
-        FilterOperator::NotEquals => dialect.distinct(&typed, &quote_literal(value)?),
-        FilterOperator::GreaterThan => format!("{typed} > {}", quote_literal(value)?),
-        FilterOperator::GreaterOrEqual => format!("{typed} >= {}", quote_literal(value)?),
-        FilterOperator::LessThan => format!("{typed} < {}", quote_literal(value)?),
-        FilterOperator::LessOrEqual => format!("{typed} <= {}", quote_literal(value)?),
+        FilterOperator::Equals => format!("{typed} = {}", dialect.literal(value)?),
+        FilterOperator::NotEquals => dialect.distinct(&typed, &dialect.literal(value)?),
+        FilterOperator::GreaterThan => format!("{typed} > {}", dialect.literal(value)?),
+        FilterOperator::GreaterOrEqual => format!("{typed} >= {}", dialect.literal(value)?),
+        FilterOperator::LessThan => format!("{typed} < {}", dialect.literal(value)?),
+        FilterOperator::LessOrEqual => format!("{typed} <= {}", dialect.literal(value)?),
         FilterOperator::Contains => dialect.contains(&text, &pattern("%", "%")?, false),
         FilterOperator::NotContains => format!("({column} IS NULL OR {})", dialect.contains(&text, &pattern("%", "%")?, true)),
         FilterOperator::StartsWith => dialect.contains(&text, &pattern("", "%")?, false),
         FilterOperator::EndsWith => dialect.contains(&text, &pattern("%", "")?, false),
-        FilterOperator::Like => format!("{text} LIKE {}", quote_literal(value)?),
+        FilterOperator::Like => format!("{text} LIKE {}", dialect.literal(value)?),
         FilterOperator::In => format!("{typed} IN ({})", list()?),
         FilterOperator::NotIn => format!("{typed} NOT IN ({})", list()?),
         FilterOperator::IsNull => format!("{column} IS NULL"),

@@ -66,7 +66,7 @@ fn supabase_pooler_url() {
 
 #[test]
 fn other_text_is_refused() {
-    let error = parse_connection_url("sqlserver://root@localhost/db").unwrap_err();
+    let error = parse_connection_url("oracle://root@localhost/db").unwrap_err();
     assert!(error.message().contains("postgres://"), "{error}");
     let error = parse_connection_url("postgres://u@h:notaport/d").unwrap_err();
     assert!(error.message().contains("can't be read"), "{error}");
@@ -127,4 +127,37 @@ fn mongodb_urls_stay_whole_without_the_password() {
     let parsed = parse_connection_url("mongodb://localhost:27017,localhost:27018/?replicaSet=rs0").unwrap();
     assert_eq!(parsed.host.as_deref(), Some("mongodb://localhost:27017,localhost:27018/?replicaSet=rs0"));
     assert_eq!((parsed.user, parsed.database, parsed.tls), (None, None, None));
+}
+
+#[test]
+fn sql_server_urls_and_connection_strings() {
+    // As the Azure portal shows it.
+    let parsed = parse_connection_url(
+        "Server=tcp:demo-server.database.windows.net,1433;Initial Catalog=shop;Persist Security Info=False;User ID=admin;\
+         Password={p;w=d};MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;",
+    )
+    .unwrap();
+    assert_eq!(parsed.engine, Engine::Mssql);
+    assert_eq!(parsed.host, some("demo-server.database.windows.net"));
+    assert_eq!(parsed.port, Some(1433));
+    assert_eq!(parsed.database, some("shop"));
+    assert_eq!(parsed.user, some("admin"));
+    assert_eq!(parsed.password, some("p;w=d"));
+    assert_eq!(parsed.tls, Some(TlsMode::VerifyFull));
+
+    let parsed = parse_connection_url("Data Source=localhost;Database=app;UID=sa;PWD=x;TrustServerCertificate=true;Encrypt=yes").unwrap();
+    assert_eq!((parsed.host, parsed.port, parsed.tls), (some("localhost"), Some(1433), Some(TlsMode::Require)));
+
+    let parsed = parse_connection_url("jdbc:sqlserver://db.example.com:14330;databaseName=sales;user=app;password=s3cret;encrypt=false").unwrap();
+    assert_eq!(parsed.host, some("db.example.com"));
+    assert_eq!(parsed.port, Some(14330));
+    assert_eq!(parsed.database, some("sales"));
+    assert_eq!(parsed.tls, Some(TlsMode::Prefer));
+
+    let parsed = parse_connection_url("sqlserver://sa:p%40ss@127.0.0.1?database=master&encrypt=true&TrustServerCertificate=true").unwrap();
+    assert_eq!(parsed.engine, Engine::Mssql);
+    assert_eq!(parsed.port, Some(1433));
+    assert_eq!(parsed.password, some("p@ss"));
+    assert_eq!(parsed.database, some("master"));
+    assert_eq!(parsed.tls, Some(TlsMode::Require));
 }

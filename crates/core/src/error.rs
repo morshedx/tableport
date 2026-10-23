@@ -99,6 +99,27 @@ impl DatabaseError {
     }
 }
 
+impl DatabaseError {
+    /// The server's message when there is one; otherwise a short reason,
+    /// prefixed with the endpoint for connection failures.
+    pub(crate) fn from_mssql(error: tiberius::error::Error, endpoint: &str) -> Self {
+        use tiberius::error::{Error, IoErrorKind};
+        match error {
+            Error::Server(server) => Self::new(server.message().to_string()),
+            Error::Io { kind: IoErrorKind::ConnectionRefused, .. } => Self::new(format!("Could not reach {endpoint}: Connection refused.")),
+            Error::Io { message, .. } => Self::new(format!("Could not reach {endpoint}: {message}.")),
+            Error::Tls(message) if message.contains("certificate") || message.contains("verify") => Self::Failed {
+                message: format!("TLS with {endpoint} failed: {message}"),
+                detail: None,
+                hint: Some("The server's certificate isn't trusted. Set TLS to “require” to skip the certificate check.".into()),
+                position: None,
+            },
+            Error::Tls(message) => Self::new(format!("TLS with {endpoint} failed: {message}")),
+            other => Self::new(other.to_string()),
+        }
+    }
+}
+
 fn io_reason(error: &io::Error) -> String {
     match error.kind() {
         io::ErrorKind::ConnectionRefused => "Connection refused".into(),

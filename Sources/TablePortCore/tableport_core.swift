@@ -3399,7 +3399,8 @@ public struct ParsedUrl: Equatable, Hashable {
     public var tls: TlsMode?
     /**
      * PostgreSQL for postgres://, MySQL for mysql:// and mariadb://, Redis
-     * for redis:// and rediss://.
+     * for redis:// and rediss://, SQL Server for sqlserver:// and its
+     * connection strings.
      */
     public var engine: Engine
 
@@ -3408,7 +3409,8 @@ public struct ParsedUrl: Equatable, Hashable {
     public init(host: String?, port: UInt16?, database: String?, user: String?, password: String?, tls: TlsMode?, 
         /**
          * PostgreSQL for postgres://, MySQL for mysql:// and mariadb://, Redis
-         * for redis:// and rediss://.
+         * for redis:// and rediss://, SQL Server for sqlserver:// and its
+         * connection strings.
          */engine: Engine) {
         self.host = host
         self.port = port
@@ -5277,6 +5279,11 @@ public enum Engine: Equatable, Hashable {
      * (mongodb://, mongodb+srv:// for Atlas) without its password.
      */
     case mongo
+    /**
+     * SQL Server or Azure SQL. `database` is optional: the login's default
+     * database is used without it.
+     */
+    case mssql
 
 
 
@@ -5310,6 +5317,8 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         
         case 6: return .mongo
         
+        case 7: return .mssql
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -5340,6 +5349,10 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         
         case .mongo:
             writeInt(&buf, Int32(6))
+        
+        
+        case .mssql:
+            writeInt(&buf, Int32(7))
         
         }
     }
@@ -7890,7 +7903,9 @@ public func structureChangeSql(relation: Relation, change: StructureChange, engi
 /**
  * Reads `postgres://user:password@host:port/database?sslmode=…`, also with
  * `postgresql://` and percent-encoded parts, as libpq does; and
- * `mysql://` or `mariadb://` URLs with `ssl-mode`.
+ * `mysql://` or `mariadb://` URLs with `ssl-mode`. SQL Server comes as
+ * `sqlserver://`, a JDBC URL, or an ADO.NET connection string, as the Azure
+ * portal shows it.
  *
  * Read by hand rather than with tokio-postgres' parser, which refuses the
  * whole URL for any parameter it doesn't know. Real URLs carry many: Prisma
@@ -7984,7 +7999,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tableport_core_checksum_func_structure_change_sql() != 62335) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tableport_core_checksum_func_parse_connection_url() != 58734) {
+    if (uniffi_tableport_core_checksum_func_parse_connection_url() != 55087) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tableport_core_checksum_method_completer_complete() != 57341) {

@@ -93,7 +93,7 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 const DEFAULT_ROWS: u64 = 100;
 const MAX_ROWS: u64 = 1000;
 const STATEMENT_TIMEOUT: &str = "30s";
-/// [`STATEMENT_TIMEOUT`] for MySQL, where TablePort stops the query itself.
+/// [`STATEMENT_TIMEOUT`] for MySQL and SQL Server, where TablePort stops the query itself.
 const MYSQL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// AI sessions unused this long are closed; the next call opens them again.
 const IDLE_CLOSE: std::time::Duration = std::time::Duration::from_secs(300);
@@ -369,6 +369,7 @@ fn engine_name(engine: crate::Engine) -> &'static str {
         crate::Engine::Libsql => "libSQL",
         crate::Engine::Redis => "Redis",
         crate::Engine::Mongo => "MongoDB",
+        crate::Engine::Mssql => "SQL Server",
     }
 }
 
@@ -427,7 +428,7 @@ fn tool_definitions() -> Value {
     json!([
         {
             "name": "list_connections",
-            "description": "The connections the user allowed for AI access in TablePort, with each one's engine: PostgreSQL, MySQL, SQLite, libSQL or Redis.",
+            "description": "The connections the user allowed for AI access in TablePort, with each one's engine: PostgreSQL, MySQL, SQL Server, SQLite, libSQL, Redis or MongoDB.",
             "inputSchema": { "type": "object", "properties": {} },
             "annotations": { "readOnlyHint": true },
         },
@@ -464,7 +465,8 @@ fn tool_definitions() -> Value {
                 Changes to data are refused. At most max_rows rows (default 100, up to 1000); 30 s time limit. \
                 On Redis: one read command (GET, HGETALL, LRANGE, SCAN, ZRANGE…) as sql; writes, scripts and KEYS are refused. \
                 On MongoDB: one call in mongo shell syntax as sql, such as db.people.find({ age: { $gt: 30 } }).limit(10) or \
-                db.orders.aggregate([…]); writes, $out and $merge are refused.",
+                db.orders.aggregate([…]); writes, $out and $merge are refused. \
+                On SQL Server: one T-SQL SELECT or WITH … SELECT (use TOP, not LIMIT); variables, EXEC, INTO and OPENQUERY are refused.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -522,6 +524,22 @@ async fn read_query(session: &DatabaseSession, sql: &str, max_rows: u64) -> Resu
         let body = json!({ "documents": rows, "count": rows.len(), "truncated": truncated });
         return Ok((serde_json::to_string_pretty(&body).unwrap_or_default(), summary));
     }
+    if let Some(link) = session.mssql() {
+        // T-SQL can't wrap a query that has ORDER BY or WITH; the statement
+        // is checked word by word instead, and its transaction rolled back.
+        let sql = statement(sql).to_string();
+        let mut rows = crate::on_runtime(async move { link.read_only_json(&sql, max_rows, MYSQL_TIMEOUT).await }).await?;
+        let truncated = rows.len() as u64 > max_rows;
+        rows.truncate(max_rows as usize);
+        let summary = format!("{}{} rows", rows.len(), if truncated { "+" } else { "" });
+        let body = json!({
+            "rows": rows,
+            "row_count": rows.len(),
+            "truncated": truncated,
+            "note": if truncated { "More rows exist; raise max_rows or add a TOP, WHERE or aggregate." } else { "" },
+        });
+        return Ok((serde_json::to_string_pretty(&body).unwrap_or_default(), summary));
+    }
     // A clear answer for the common case; the wrapping below is what
     // actually keeps every write out.
     let verb = crate::sql_text::statement_verbs(sql).into_iter().next().unwrap_or_default();
@@ -567,6 +585,12 @@ async fn read_query(session: &DatabaseSession, sql: &str, max_rows: u64) -> Resu
 async fn explain_query(session: &DatabaseSession, sql: &str) -> Result<(String, String), DatabaseError> {
     if session.engine() == crate::Engine::Mongo {
         return Err(DatabaseError::new("explain_query isn't available on MongoDB yet; run_read_query shows the documents."));
+    }
+    if let Some(link) = session.mssql() {
+        let sql = statement(sql).to_string();
+        let plan = crate::on_runtime(async move { link.explain(&sql).await }).await?;
+        let summary = format!("{} plan lines", plan.len());
+        return Ok((plan.join("\n"), summary));
     }
     if let Some(link) = session.mysql() {
         // EXPLAIN ANALYZE runs what it explains: only reads may be explained.

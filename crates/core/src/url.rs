@@ -11,13 +11,16 @@ pub struct ParsedUrl {
     pub password: Option<String>,
     pub tls: Option<TlsMode>,
     /// PostgreSQL for postgres://, MySQL for mysql:// and mariadb://, Redis
-    /// for redis:// and rediss://.
+    /// for redis:// and rediss://, SQL Server for sqlserver:// and its
+    /// connection strings.
     pub engine: Engine,
 }
 
 /// Reads `postgres://user:password@host:port/database?sslmode=…`, also with
 /// `postgresql://` and percent-encoded parts, as libpq does; and
-/// `mysql://` or `mariadb://` URLs with `ssl-mode`.
+/// `mysql://` or `mariadb://` URLs with `ssl-mode`. SQL Server comes as
+/// `sqlserver://`, a JDBC URL, or an ADO.NET connection string, as the Azure
+/// portal shows it.
 ///
 /// Read by hand rather than with tokio-postgres' parser, which refuses the
 /// whole URL for any parameter it doesn't know. Real URLs carry many: Prisma
@@ -26,6 +29,12 @@ pub struct ParsedUrl {
 #[uniffi::export]
 pub fn parse_connection_url(url: &str) -> Result<ParsedUrl, DatabaseError> {
     let url = url.trim();
+    if let Some(rest) = url.strip_prefix("jdbc:sqlserver://") {
+        return mssql_properties(&format!("server={}", rest.replacen(';', ";", 1)), true);
+    }
+    if !url.contains("://") && url.contains('=') {
+        return mssql_properties(url, false);
+    }
     let (engine, rest) = if let Some(rest) = url.strip_prefix("postgresql://").or_else(|| url.strip_prefix("postgres://")) {
         (Engine::Postgres, rest)
     } else if let Some(rest) = url.strip_prefix("mysql://").or_else(|| url.strip_prefix("mariadb://")) {
@@ -34,10 +43,14 @@ pub fn parse_connection_url(url: &str) -> Result<ParsedUrl, DatabaseError> {
         (Engine::Redis, rest)
     } else if let Some(rest) = url.strip_prefix("rediss://") {
         (Engine::Redis, rest)
+    } else if let Some(rest) = url.strip_prefix("sqlserver://").or_else(|| url.strip_prefix("mssql://")) {
+        (Engine::Mssql, rest)
     } else if url.starts_with("mongodb://") || url.starts_with("mongodb+srv://") {
         return mongo_url(url);
     } else {
-        return Err(DatabaseError::new("A connection URL starts with postgres://, mysql://, mariadb://, redis:// or rediss://."));
+        return Err(DatabaseError::new(
+            "A connection URL starts with postgres://, mysql://, mariadb://, sqlserver://, redis://, rediss:// or mongodb://.",
+        ));
     };
     let (rest, query) = rest.split_once('?').unwrap_or((rest, ""));
     let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
@@ -68,6 +81,7 @@ pub fn parse_connection_url(url: &str) -> Result<ParsedUrl, DatabaseError> {
     parsed.port = port;
     parsed.database = non_empty(decode(path)?);
 
+    let mut encrypt_flags = Vec::new();
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
         let value = decode(value)?;
@@ -80,14 +94,22 @@ pub fn parse_connection_url(url: &str) -> Result<ParsedUrl, DatabaseError> {
             "dbname" => parsed.database = non_empty(value),
             "user" => parsed.user = non_empty(value),
             "password" => parsed.password = Some(value),
+            "database" => parsed.database = non_empty(value),
+            "encrypt" | "trustservercertificate" | "TrustServerCertificate" => {
+                encrypt_flags.push((key.to_ascii_lowercase(), value.to_ascii_lowercase()));
+            }
             _ => {}
         }
+    }
+    if !encrypt_flags.is_empty() {
+        parsed.tls = Some(mssql_tls(&encrypt_flags));
     }
     // No port means the engine's default.
     if parsed.host.is_some() && parsed.port.is_none() {
         parsed.port = Some(match engine {
             Engine::Mysql => 3306,
             Engine::Redis => 6379,
+            Engine::Mssql => 1433,
             _ => 5432,
         });
     }
@@ -119,6 +141,98 @@ fn mongo_url(url: &str) -> Result<ParsedUrl, DatabaseError> {
     };
     let tls = if tail.contains("tls=true") || tail.contains("ssl=true") || scheme == "mongodb+srv" { Some(TlsMode::VerifyFull) } else { None };
     Ok(ParsedUrl { host: Some(without_password), port: Some(0), database, user, password, tls, engine: Engine::Mongo })
+}
+
+/// An ADO.NET connection string (`Server=tcp:x.database.windows.net,1433;
+/// Initial Catalog=db;User ID=…;Password=…;Encrypt=True;`), or a JDBC
+/// URL's properties after its host (`jdbc` true).
+fn mssql_properties(text: &str, jdbc: bool) -> Result<ParsedUrl, DatabaseError> {
+    let mut parsed = ParsedUrl { host: None, port: None, database: None, user: None, password: None, tls: None, engine: Engine::Mssql };
+    let mut encrypt_flags = Vec::new();
+    for part in split_properties(text) {
+        let Some((key, value)) = part.split_once('=') else { continue };
+        let key = key.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+        let value = unquote(value.trim());
+        match key.as_str() {
+            "server" | "data source" | "address" | "addr" | "network address" => {
+                let host = value.strip_prefix("tcp:").unwrap_or(&value);
+                // ADO.NET puts the port after a comma; JDBC after a colon.
+                let (host, port) = match host.rsplit_once(if jdbc { ':' } else { ',' }) {
+                    Some((host, port)) => (host.trim(), Some(parse_port(port.trim())?)),
+                    None => (host.trim(), None),
+                };
+                parsed.host = non_empty(host.to_string());
+                parsed.port = port;
+            }
+            "port" | "portnumber" => parsed.port = Some(parse_port(&value)?),
+            "initial catalog" | "database" | "databasename" => parsed.database = non_empty(value),
+            "user id" | "uid" | "user" => parsed.user = non_empty(value),
+            "password" | "pwd" => parsed.password = Some(value),
+            "encrypt" | "trustservercertificate" | "trust server certificate" => {
+                encrypt_flags.push((key.replace(' ', ""), value.to_ascii_lowercase()));
+            }
+            _ => {}
+        }
+    }
+    if parsed.host.is_none() {
+        return Err(DatabaseError::new("This connection string has no Server."));
+    }
+    if parsed.port.is_none() {
+        parsed.port = Some(1433);
+    }
+    if !encrypt_flags.is_empty() {
+        parsed.tls = Some(mssql_tls(&encrypt_flags));
+    }
+    Ok(parsed)
+}
+
+/// Encrypt and TrustServerCertificate as TLS modes: encrypted with a
+/// trusted certificate is verify-full; Encrypt=False still encrypts when
+/// the server asks for it, as SQL Server's drivers do.
+fn mssql_tls(flags: &[(String, String)]) -> TlsMode {
+    let value = |name: &str| flags.iter().rev().find(|(key, _)| key == name).map(|(_, value)| value.as_str());
+    let yes = |text: Option<&str>| matches!(text, Some("true" | "yes" | "mandatory" | "strict"));
+    match (yes(value("encrypt")), yes(value("trustservercertificate"))) {
+        (false, _) => TlsMode::Prefer,
+        (true, true) => TlsMode::Require,
+        (true, false) => TlsMode::VerifyFull,
+    }
+}
+
+/// `a=1;b={x;y};c="z"`, split at the semicolons outside braces and quotes.
+fn split_properties(text: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut closing: Option<char> = None;
+    for character in text.chars() {
+        match (closing, character) {
+            (None, ';') => parts.push(std::mem::take(&mut current)),
+            (None, '{') => {
+                closing = Some('}');
+                current.push(character);
+            }
+            (None, '"' | '\'') => {
+                closing = Some(character);
+                current.push(character);
+            }
+            (Some(end), _) if character == end => {
+                closing = None;
+                current.push(character);
+            }
+            _ => current.push(character),
+        }
+    }
+    parts.push(current);
+    parts.into_iter().filter(|part| !part.trim().is_empty()).collect()
+}
+
+fn unquote(value: &str) -> String {
+    for (open, close) in [('{', '}'), ('"', '"'), ('\'', '\'')] {
+        if let Some(inner) = value.strip_prefix(open).and_then(|rest| rest.strip_suffix(close)) {
+            return inner.to_string();
+        }
+    }
+    value.to_string()
 }
 
 /// `host`, `host:port`, `[::1]` or `[::1]:port`.

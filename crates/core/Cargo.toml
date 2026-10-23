@@ -33,6 +33,9 @@ serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision
 reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
 # Redis. Native TLS for rediss://, as for the others.
 redis = { version = "1.7", default-features = false, features = ["aio", "tokio-comp", "tokio-native-tls-comp"] }
+# SQL Server and Azure SQL. Native TLS, as for the others; chrono to show dates.
+tiberius = { version = "0.13", default-features = false, features = ["tds80", "native-tls", "chrono"] }
+tokio-util = { version = "0.7", features = ["compat"] }
 # MongoDB: the official driver.
 mongodb = "3.9"
 # MySQL and MariaDB. Native TLS, as for PostgreSQL; the Rust zlib, so no C toolchain.
