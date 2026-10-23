@@ -51,8 +51,9 @@ struct SavedConnection: Codable, Identifiable, Hashable {
         if engine == .libsql { return libsqlHost }
         if engine == .d1 { return "Cloudflare D1 · \(database)" }
         if engine == .firestore { return host.isEmpty ? "Firestore · \(user)" : "Firestore emulator · \(host)" }
-        if engine == .mongo { return database.isEmpty ? displayHost : "\(displayHost) : \(database)" }
-        return ssh.map { "\(host) : \(database) via \($0.host)" } ?? "\(host) : \(database)"
+        // Cassandra's keyspace and MongoDB's database may be empty: every one is shown.
+        let place = database.isEmpty ? displayHost : "\(displayHost) : \(database)"
+        return ssh.map { "\(place) via \($0.host)" } ?? place
     }
 
     /// The host, or a MongoDB connection string's hosts:
