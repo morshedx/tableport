@@ -566,7 +566,8 @@ struct ConnectionForm: View {
             if isNew {
                 Picker("Database", selection: $engine) {
                     ForEach([Engine.postgres, .mysql, .mssql, .oracle, .sqlite, .libsql, .d1, .redis, .mongo, .firestore, .cassandra], id: \.self) { engine in
-                        Text(engine == .mysql ? "MySQL / MariaDB" : engine == .libsql ? "libSQL / Turso" : engine.label).tag(engine)
+                        let name = engine == .mysql ? "MySQL / MariaDB" : engine == .libsql ? "libSQL / Turso" : engine.label
+                        Text(engine.isPreview ? "\(name) (Preview)" : name).tag(engine)
                     }
                 }
                 .labelsHidden()

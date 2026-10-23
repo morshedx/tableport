@@ -10,7 +10,7 @@ MACKIT ?= ../mac-kit/bin/mackit
 export MACKIT_SIGN
 CARGO ?= $(HOME)/.cargo/bin/cargo
 
-.PHONY: all core core-test build app run install clean setup-dev-cert icon
+.PHONY: all core core-test build app run install clean setup-dev-cert icon licences
 
 all: app
 
@@ -36,6 +36,11 @@ build: core
 # one below). Run after changing either SVG; the .icns is checked in.
 icon:
 	swift scripts/make-icon.swift "$(CURDIR)"
+
+# Resources/ThirdPartyLicences.txt from the Rust libraries the app links.
+# Run after changing dependencies; the file is checked in.
+licences:
+	python3 -I scripts/licences.py
 
 # Build + sign the .app bundle from mackit.toml.
 app: core

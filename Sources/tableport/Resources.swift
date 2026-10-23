@@ -67,10 +67,8 @@ enum LucideIcon {
     }
 }
 
-/// The PostgreSQL elephant (Slonik), in its own colours, to mark a
-/// connection as PostgreSQL. The PostgreSQL trademark policy allows the logo
-/// for referring to PostgreSQL.
-/// The engine's logo: PostgreSQL's elephant, or a SQLite badge.
+/// The engine's initials on a tile in its colour. Most database owners'
+/// trademark rules need written permission to show their logos here.
 struct EngineLogo: View {
     let engine: Engine
     let size: CGFloat
@@ -78,99 +76,39 @@ struct EngineLogo: View {
     var body: some View {
         switch engine {
         case .postgres:
-            PostgresLogo(size: size)
+            tile(label: "PostgreSQL", letters: "PG", color: Color(red: 0.20, green: 0.40, blue: 0.60))
         case .sqlite:
-            logo(Self.sqlite, label: "SQLite", letters: "Sl", color: Color(red: 0.06, green: 0.45, blue: 0.75))
+            tile(label: "SQLite", letters: "SL", color: Color(red: 0.06, green: 0.45, blue: 0.75))
         case .mysql:
-            // One colour, so it can lighten in dark mode, where MySQL's blue is too dark to see.
-            logo(Self.mysql, label: "MySQL", letters: "My", color: Self.mysqlBlue, tint: true)
+            tile(label: "MySQL", letters: "MY", color: Color(red: 0.27, green: 0.47, blue: 0.63))
         case .libsql:
-            logo(Self.turso, label: "libSQL", letters: "Tu", color: Self.tursoTeal, tint: true)
+            tile(label: "libSQL", letters: "TU", color: Color(red: 0.10, green: 0.62, blue: 0.54))
         case .redis:
-            logo(Self.redis, label: "Redis", letters: "Re", color: Color(red: 1.0, green: 0.27, blue: 0.22))
+            tile(label: "Redis", letters: "RE", color: Color(red: 1.0, green: 0.27, blue: 0.22))
         case .mongo:
-            logo(Self.mongo, label: "MongoDB", letters: "Mo", color: Color(red: 0.28, green: 0.64, blue: 0.28))
+            tile(label: "MongoDB", letters: "MO", color: Color(red: 0.28, green: 0.64, blue: 0.28))
         case .firestore:
-            // Google's brand rules don't allow Firebase's logo here: letters, in Firebase's amber.
-            logo(nil, label: "Firestore", letters: "Fs", color: Color(red: 0.96, green: 0.62, blue: 0.10))
+            tile(label: "Firestore", letters: "FS", color: Color(red: 0.96, green: 0.62, blue: 0.10))
         case .d1:
-            // Cloudflare's trademark rules don't allow its logo here: letters, in Cloudflare's orange.
-            logo(nil, label: "Cloudflare D1", letters: "D1", color: Color(red: 0.95, green: 0.50, blue: 0.13))
+            tile(label: "Cloudflare D1", letters: "D1", color: Color(red: 0.95, green: 0.50, blue: 0.13))
         case .oracle:
-            // Oracle's trademark rules don't allow its logo here: letters, in Oracle's red.
-            logo(nil, label: "Oracle", letters: "Or", color: Color(red: 0.78, green: 0.27, blue: 0.20))
+            tile(label: "Oracle", letters: "OR", color: Color(red: 0.78, green: 0.27, blue: 0.20))
         case .cassandra:
-            logo(Self.cassandra, label: "Cassandra", letters: "Ca", color: Color(red: 0.07, green: 0.53, blue: 0.69), tint: true)
+            tile(label: "Cassandra", letters: "CA", color: Color(red: 0.07, green: 0.53, blue: 0.69))
         case .mssql:
-            // Microsoft's trademark rules don't allow its logo here: letters, in SQL Server's red.
-            logo(nil, label: "SQL Server", letters: "Ss", color: Color(red: 0.80, green: 0.16, blue: 0.15))
+            tile(label: "SQL Server", letters: "SS", color: Color(red: 0.80, green: 0.16, blue: 0.15))
         }
     }
 
-    /// The engine's own logo, or its letters on a tile if the file is missing.
-    @ViewBuilder
-    private func logo(_ image: NSImage?, label: String, letters: String, color: Color, tint: Bool = false) -> some View {
-        if let image {
-            Image(nsImage: image)
-                .resizable()
-                .renderingMode(tint ? .template : .original)
-                .interpolation(.high)
-                .aspectRatio(contentMode: .fit)
-                .foregroundStyle(color)
-                .frame(width: size, height: size)
-                .accessibilityLabel(label)
-        } else {
-            Text(letters)
-                .font(.system(size: size * 0.42, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: size, height: size)
-                .background(RoundedRectangle(cornerRadius: size * 0.24).fill(color))
-                .accessibilityLabel(label)
-        }
+    private func tile(label: String, letters: String, color: Color) -> some View {
+        Text(letters)
+            .font(.system(size: size * 0.38, weight: .semibold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .foregroundStyle(.white)
+            .frame(width: size, height: size)
+            .background(RoundedRectangle(cornerRadius: size * 0.24).fill(color))
+            .accessibilityLabel(label)
     }
-
-    private static func image(_ name: String) -> NSImage? {
-        Bundle.resources?.url(forResource: name, withExtension: "svg").flatMap(NSImage.init(contentsOf:))
-    }
-
-    private static let sqlite = image("sqlite")
-    private static let mysql = image("mysql")
-    private static let turso = image("turso")
-    private static let redis = image("redis")
-    private static let mongo = image("mongodb")
-    private static let cassandra = image("cassandra")
-    /// Turso's own teal in dark mode; darker in light mode, where it would vanish.
-    private static let tursoTeal = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(red: 0.31, green: 0.97, blue: 0.82, alpha: 1)
-            : NSColor(red: 0.10, green: 0.62, blue: 0.54, alpha: 1)
-    })
-    private static let mysqlBlue = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(red: 0.47, green: 0.66, blue: 0.84, alpha: 1)
-            : NSColor(red: 0.27, green: 0.47, blue: 0.63, alpha: 1)
-    })
 }
 
-struct PostgresLogo: View {
-    let size: CGFloat
-    private static let image: NSImage? = Bundle.resources?.url(forResource: "postgresql", withExtension: "svg")
-        .flatMap(NSImage.init(contentsOf:))
-
-    var body: some View {
-        if let image = Self.image {
-            Image(nsImage: image)
-                .resizable()
-                .interpolation(.high)
-                .aspectRatio(contentMode: .fit)
-                .frame(width: size, height: size)
-                .accessibilityLabel("PostgreSQL")
-        } else {
-            Text("Pg")
-                .font(.system(size: size * 0.4, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: size, height: size)
-                .background(Circle().fill(Color(red: 0.2, green: 0.4, blue: 0.6)))
-        }
-    }
-}

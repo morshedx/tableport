@@ -180,6 +180,9 @@ extension Engine: Codable {
         }
     }
 
+    /// Engines not yet tried against a real server, marked in the engine picker.
+    var isPreview: Bool { self == .mssql || self == .oracle || self == .d1 }
+
     /// SQLite's SQL and screens: a file, a libSQL server, or Cloudflare D1.
     var isSqlite: Bool { self == .sqlite || self == .libsql || self == .d1 }
 }

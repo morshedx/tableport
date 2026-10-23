@@ -116,13 +116,16 @@ extension SettingsView {
         AboutPane(
             updater: .shared,
             appName: AppInfo.name,
-            summary: "A fast, native PostgreSQL client. Free and open source.",
+            summary: "A fast, native database client. Free and open source.",
             links: [
                 AboutLink("Website", url: "https://github.com/morshedx/tableport"),
                 AboutLink("Report a Problem", url: "https://github.com/morshedx/tableport/issues/new?template=bug_report.yml"),
                 AboutLink("What's New") { page = .updates },
+                AboutLink("Licences") {
+                    if let url = Bundle.resources?.url(forResource: "ThirdPartyLicences", withExtension: "txt") { NSWorkspace.shared.open(url) }
+                },
             ],
-            footer: "Apache-2.0. JetBrains Mono: SIL Open Font License 1.1. Icons: Lucide, ISC License. The PostgreSQL logo is a trademark of the PostgreSQL Community Association.",
+            footer: "Apache-2.0. JetBrains Mono: SIL Open Font License 1.1. Icons: Lucide, ISC License. Database names are trademarks of their owners. TablePort is not affiliated with or endorsed by them.",
             showUpdates: { page = .updates }
         )
     }
