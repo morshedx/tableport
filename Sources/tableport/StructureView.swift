@@ -28,6 +28,7 @@ struct StructureView: View {
     /// A MongoDB collection's fields come from its documents, not a definition.
     private var canEditColumns: Bool { canEdit && !isDocuments }
     private var isDocuments: Bool { model.session.engine() == .mongo }
+    private var rules: StructureRules { StructureRules.of(model.session.engine()) }
 
     var body: some View {
         Group {
@@ -43,9 +44,10 @@ struct StructureView: View {
                         }
                         columns(structure.columns)
                         indexes(structure.indexes)
-                        // A MongoDB collection has neither.
-                        if !isDocuments {
+                        if rules.hasForeignKeys {
                             constraints("Foreign keys", structure.constraints.filter { $0.kind == .foreignKey }, showsKind: false)
+                        }
+                        if rules.hasConstraints {
                             constraints("Constraints", structure.constraints.filter { $0.kind != .foreignKey }, showsKind: true)
                         }
                     }
@@ -78,11 +80,9 @@ struct StructureView: View {
 
     private var toolbar: some View {
         HStack(spacing: 8) {
-            // MongoDB has no fixed columns or foreign keys: only indexes.
-            let documents = model.session.engine() == .mongo
-            if !documents { Button { sheet = .addColumn } label: { Label("Column", systemImage: "plus") } }
+            if !isDocuments { Button { sheet = .addColumn } label: { Label("Column", systemImage: "plus") } }
             Button { sheet = .addIndex } label: { Label("Index", systemImage: "plus") }
-            if !documents { Button { sheet = .addForeignKey } label: { Label("Foreign Key", systemImage: "plus") } }
+            if rules.hasForeignKeys { Button { sheet = .addForeignKey } label: { Label("Foreign Key", systemImage: "plus") } }
             Spacer()
             Text(isDocuments ? "Fields and their types, from a sample of documents." : "Double-click a column to edit it. Right-click for more.")
                 .font(Theme.meta)
@@ -100,12 +100,18 @@ struct StructureView: View {
                 TableColumn("type") { Text($0.columnType).font(AppFont.monoFont(size: 12)) }
                 TableColumn("nullable") { Text($0.nullable ? "YES" : "NO").font(AppFont.monoFont(size: 12)) }
                     .width(70)
-                    .defaultVisibility(isDocuments ? .hidden : .visible)
+                    .defaultVisibility(rules.hasNullability ? .visible : .hidden)
                 TableColumn("default") { cell($0.defaultValue) }
-                    .defaultVisibility(isDocuments ? .hidden : .visible)
-                TableColumn("comment") { cell($0.comment) }
-                    // SQLite has no column comments.
-                    .defaultVisibility(model.session.engine().isSqlite || isDocuments ? .hidden : .visible)
+                    .defaultVisibility(rules.hasDefaults ? .visible : .hidden)
+                TableColumn(rules.commentLabel) { column in
+                    // A key role is there or not; NULL would read as a value.
+                    if rules.commentLabel == "key" {
+                        Text(column.comment ?? "").font(AppFont.monoFont(size: 12))
+                    } else {
+                        cell(column.comment)
+                    }
+                }
+                    .defaultVisibility(rules.commentLabel.isEmpty ? .hidden : .visible)
             }
             .contextMenu(forSelectionType: ColumnDetail.ID.self) { names in
                 if let column = columns.first(where: { names.contains($0.name) }) {
@@ -432,9 +438,11 @@ private struct ColumnSheet: View {
         original.map { .editColumn(original: $0, column: spec) } ?? .addColumn(column: spec)
     }
 
+    private var rules: StructureRules { StructureRules.of(model.session.engine()) }
+
     private var note: String? {
         guard let original, columnType.trimmingCharacters(in: .whitespaces) != original.columnType else { return nil }
-        return "Changing the type converts every value with USING and may rewrite the table."
+        return rules.typeChangeNote
     }
 
     var body: some View {
@@ -447,12 +455,17 @@ private struct ColumnSheet: View {
                     TextField("Type", text: $columnType)
                     TypeMenu(columnType: $columnType, engine: model.session.engine())
                 }
-                Toggle("Allow NULL", isOn: $nullable)
-                TextField("Default", text: $defaultValue, prompt: Text(isGenerated ? "" : "none, or an expression such as now()"))
-                    .disabled(isGenerated)
-                    .help(isGenerated ? "Identity and generated columns are changed in SQL" : "")
-                // SQLite has no column comments.
-                if !model.session.engine().isSqlite {
+                // A type Cassandra can't change isn't offered for editing.
+                .disabled(original != nil && rules.typeChangeNote == nil)
+                if rules.hasNullability {
+                    Toggle("Allow NULL", isOn: $nullable)
+                }
+                if rules.hasDefaults {
+                    TextField("Default", text: $defaultValue, prompt: Text(isGenerated ? "" : "none, or an expression such as \(rules.defaultExample)"))
+                        .disabled(isGenerated)
+                        .help(isGenerated ? "Identity and generated columns are changed in SQL" : "")
+                }
+                if rules.hasComments {
                     TextField("Comment", text: $comment, prompt: Text("none"))
                 }
             }
@@ -516,6 +529,7 @@ private struct TypeMenu: View {
 /// new table.
 struct NewTableSheet: View {
     let workspace: WorkspaceModel
+    private var rules: StructureRules { StructureRules.of(workspace.session.engine()) }
     @State private var schema: String
     @State private var name = ""
     @State private var rows: [Row] = [
@@ -631,8 +645,8 @@ struct NewTableSheet: View {
                 Text("Column").frame(width: 170, alignment: .leading)
                 Text("Type").frame(width: 190, alignment: .leading)
                 Text("Key").frame(width: 34)
-                Text("NULL").frame(width: 38)
-                Text("Default").frame(maxWidth: .infinity, alignment: .leading)
+                if rules.hasNullability { Text("NULL").frame(width: 38) }
+                if rules.hasDefaults { Text("Default").frame(maxWidth: .infinity, alignment: .leading) } else { Spacer() }
                 Color.clear.frame(width: 20)
             }
             .font(Theme.meta)
@@ -649,10 +663,12 @@ struct NewTableSheet: View {
                             .frame(width: 190)
                             Toggle("", isOn: $row.primaryKey).labelsHidden().frame(width: 34)
                                 .help("Part of the primary key")
-                            Toggle("", isOn: $row.nullable).labelsHidden().frame(width: 38)
-                                .disabled(row.primaryKey)
-                                .help(row.primaryKey ? "Key columns are never NULL" : "Allow NULL")
-                            TextField("none", text: $row.defaultValue)
+                            if rules.hasNullability {
+                                Toggle("", isOn: $row.nullable).labelsHidden().frame(width: 38)
+                                    .disabled(row.primaryKey)
+                                    .help(row.primaryKey ? "Key columns are never NULL" : "Allow NULL")
+                            }
+                            if rules.hasDefaults { TextField("none", text: $row.defaultValue) } else { Spacer() }
                             Button {
                                 rows.removeAll { $0.id == row.id }
                             } label: {
@@ -708,6 +724,8 @@ private struct IndexSheet: View {
     @State private var nameEdited = false
     @State private var error: String?
 
+    private var rules: StructureRules { StructureRules.of(model.session.engine()) }
+
     private var suggestedName: String {
         ([model.relation.name] + chosen + [unique ? "key" : "idx"]).joined(separator: "_")
     }
@@ -741,13 +759,15 @@ private struct IndexSheet: View {
             }
             .frame(maxHeight: 180)
             Form {
-                Toggle("Unique", isOn: $unique)
-                    .onChange(of: unique) { if !nameEdited { name = suggestedName } }
+                if rules.hasUniqueIndexes {
+                    Toggle("Unique", isOn: $unique)
+                        .onChange(of: unique) { if !nameEdited { name = suggestedName } }
+                }
                 TextField("Name", text: Binding(get: { name }, set: { name = $0; nameEdited = true }))
                     .font(AppFont.monoFont(size: 12))
             }
             ChangeFooter(model: model, change: .addIndex(name: name, columns: chosen, unique: unique),
-                         note: "Building the index blocks writes to the table until it is done.", error: $error)
+                         note: rules.indexNote, error: $error)
         }
         .padding(20)
         .frame(width: 520)
@@ -871,6 +891,53 @@ extension ConstraintKind {
         case .unique: "UNIQUE"
         case .check: "CHECK"
         case .exclusion: "EXCLUDE"
+        }
+    }
+}
+
+/// What the Structure view and its sheets offer for one engine: only what
+/// the engine has. One exhaustive switch, so a new engine can't show
+/// another engine's options or notes.
+struct StructureRules {
+    var hasForeignKeys = true
+    /// A Constraints section besides the indexes.
+    var hasConstraints = true
+    var hasNullability = true
+    var hasDefaults = true
+    var hasComments = true
+    var hasUniqueIndexes = true
+    /// The header of the column that holds `comment`; empty hides it.
+    var commentLabel = "comment"
+    var defaultExample = "now()"
+    /// Shown when a column's type changes; None: the type can't change.
+    var typeChangeNote: String? = "Changing the type converts every value and may rewrite the table."
+    var indexNote: String? = nil
+
+    static func of(_ engine: Engine) -> StructureRules {
+        switch engine {
+        case .postgres:
+            StructureRules(typeChangeNote: "Changing the type converts every value with USING and may rewrite the table.",
+                           indexNote: "Building the index blocks writes to the table until it is done.")
+        case .mysql:
+            StructureRules(defaultExample: "CURRENT_TIMESTAMP", typeChangeNote: "Changing the type converts every value and rebuilds the table.")
+        case .mssql:
+            // Column comments (MS_Description) aren't read or written yet.
+            StructureRules(hasComments: false, commentLabel: "", defaultExample: "SYSDATETIME()",
+                           typeChangeNote: "Changing the type converts every value; SQL Server refuses it while an index uses the column.")
+        case .sqlite, .libsql:
+            StructureRules(hasComments: false, commentLabel: "", defaultExample: "CURRENT_TIMESTAMP",
+                           typeChangeNote: "SQLite can't change a type in place: TablePort rebuilds the table, keeping its rows.")
+        case .cassandra:
+            // CQL has no foreign keys, NOT NULL, defaults or other constraints; the key role shows instead of a comment.
+            StructureRules(hasForeignKeys: false, hasConstraints: false, hasNullability: false, hasDefaults: false, hasComments: false,
+                           hasUniqueIndexes: false, commentLabel: "key", typeChangeNote: nil,
+                           indexNote: "Cassandra builds the index in the background; queries may miss rows until it is done.")
+        case .mongo:
+            StructureRules(hasForeignKeys: false, hasConstraints: false, hasNullability: false, hasDefaults: false, hasComments: false,
+                           commentLabel: "", typeChangeNote: nil, indexNote: "MongoDB builds the index while the collection stays in use.")
+        case .redis:
+            StructureRules(hasForeignKeys: false, hasConstraints: false, hasNullability: false, hasDefaults: false, hasComments: false,
+                           hasUniqueIndexes: false, commentLabel: "", typeChangeNote: nil)
         }
     }
 }

@@ -107,9 +107,9 @@ struct ConnectionForm: View {
     private var isServerComplete: Bool {
         if engine.isSqlite { return !trimmed(database).isEmpty }
         // MySQL shows every database of the server; naming one is optional.
-        let hasDatabase = engine == .mysql || engine == .redis || engine == .mongo || engine == .mssql || engine == .cassandra || !trimmed(database).isEmpty
+        let hasDatabase = fields.databaseIsOptional || !trimmed(database).isEmpty
         // Redis logs in as its default user, and MongoDB may need no login.
-        let hasUser = engine == .redis || engine == .mongo || engine == .cassandra || !trimmed(user).isEmpty
+        let hasUser = fields.userIsOptional || !trimmed(user).isEmpty
         return !trimmed(host).isEmpty && hasDatabase && hasUser && serverPort != nil
     }
 
@@ -139,7 +139,7 @@ struct ConnectionForm: View {
             VStack(alignment: .leading, spacing: 14) {
                 // URLs are for servers; a file is chosen on the Connection tab.
                 // Cassandra has no connection URL.
-                if !engine.isSqlite && engine != .cassandra { urlBar }
+                if fields.urlPrompt != nil { urlBar }
                 tabBar
                 Group {
                     switch tab {
@@ -302,16 +302,7 @@ struct ConnectionForm: View {
                 FormRow("Tag") {
                     tagChips
                 }
-                SwitchRow("Read-only", hint: engine == .redis
-                              ? "Browse and read, never change data. TablePort runs only commands that read."
-                              // SQL Server has no read-only session to ask for.
-                              : engine == .mssql
-                              ? "Browse and query, never change data. TablePort refuses writes and rolls back every query."
-                              // Nor does Cassandra, which has no transactions either.
-                              : engine == .cassandra
-                              ? "Browse and query, never change data. TablePort runs only statements that read."
-                              : "Browse and query, never change data. The server refuses every write.",
-                          isOn: $readOnly)
+                SwitchRow("Read-only", hint: fields.readOnlyHint, isOn: $readOnly)
             }
             FormCard("Server") {
                 FormRow("Host") {
@@ -330,11 +321,11 @@ struct ConnectionForm: View {
                         }
                     }
                 }
-                FormRow("Database") {
-                    TextField("Database", text: $database, prompt: Text(databasePrompt))
+                FormRow(fields.databaseLabel) {
+                    TextField(fields.databaseLabel, text: $database, prompt: Text(fields.databasePrompt))
                 }
                 FormRow("User") {
-                    TextField("User", text: $user, prompt: Text(engine == .redis ? "default" : engine == .mongo || engine == .cassandra ? "none" : engine == .mysql ? "root" : engine == .mssql ? "sa" : "postgres"))
+                    TextField("User", text: $user, prompt: Text(fields.userPrompt))
                 }
                 FormRow("Password") {
                     HStack(spacing: 6) {
@@ -371,14 +362,14 @@ struct ConnectionForm: View {
             FormCard("AI tools") {
                 SwitchRow("Allow AI access", hint: "Claude, Cursor and other AI tools can read it, never change it.",
                           isOn: $aiAccess)
-                if aiAccess && (engine == .postgres || engine == .mongo || engine == .mssql) {
+                if aiAccess && fields.offersEveryDatabase {
                     SwitchRow("Every database on this server",
                               hint: "With the same login, still read-only. For many databases on one server.",
                               isOn: $aiAllDatabases, indent: true)
                 }
             }
-            if engine == .mysql || engine == .cassandra {
-                loginAccessWarning
+            if let warning = fields.loginWarning {
+                loginAccessWarning(warning)
             }
             if engine == .libsql {
                 Label("For AI access, a read-only token is safest: turso db tokens create <database> --read-only.",
@@ -393,18 +384,16 @@ struct ConnectionForm: View {
     /// A MySQL or Cassandra login reads every database or keyspace it has
     /// rights to; TablePort can't keep an AI tool to one, so the user must
     /// know before turning it on.
-    private var loginAccessWarning: some View {
+    private func loginAccessWarning(_ warning: (title: String, detail: String)) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(Theme.warning)
                 .font(.system(size: 15))
             VStack(alignment: .leading, spacing: 4) {
-                Text(engine == .cassandra ? "AI tools can read every keyspace this login can read" : "AI tools can read every database this login can read")
+                Text(warning.title)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Theme.ink)
-                Text(engine == .cassandra
-                     ? "A CQL query can name any keyspace. To limit what AI tools see, connect with a Cassandra role that has rights only to the keyspaces you want to share."
-                     : "MySQL has no way to keep a login to one database. To limit what AI tools see, connect with a MySQL user that has rights only to the databases you want to share.")
+                Text(warning.detail)
                     .font(Theme.meta)
                     .foregroundStyle(Theme.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -450,16 +439,7 @@ struct ConnectionForm: View {
         .onChange(of: engine) { old, engine in switchEngine(from: old, to: engine) }
     }
 
-    private var databasePrompt: String {
-        switch engine {
-        case .mysql: "optional: every database is shown"
-        case .redis: "0"
-        case .mongo: "optional: every database is shown"
-        case .mssql: "optional: the login's default database"
-        case .cassandra: "optional: every keyspace is shown"
-        default: "postgres"
-        }
-    }
+    private var fields: EngineFields { EngineFields.of(engine) }
 
     /// Port, user and database a new connection starts with.
     private static func defaults(_ engine: Engine) -> (port: String, user: String, database: String) {
@@ -535,9 +515,7 @@ struct ConnectionForm: View {
         HStack(spacing: 8) {
             Image(systemName: "link")
                 .foregroundStyle(Theme.inkSecondary)
-            TextField("URL", text: $url, prompt: Text(engine == .mssql
-                ? "Paste a connection string (Server=…) or sqlserver:// URL to fill the form"
-                : "Paste a \(engine == .mysql ? "mysql" : engine == .redis ? "redis" : engine == .mongo ? "mongodb" : "postgres"):// URL to fill the form"))
+            TextField("URL", text: $url, prompt: Text(fields.urlPrompt ?? ""))
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: url) { _, text in fill(from: text) }
         }
@@ -1093,5 +1071,57 @@ extension FormTarget {
     var isNew: Bool {
         if case .new = self { return true }
         return false
+    }
+}
+
+/// What the connection form shows for one engine: its own labels, hints and
+/// prompts only. One exhaustive switch, so a new engine can't fall back on
+/// another engine's text.
+private struct EngineFields {
+    var databaseLabel = "Database"
+    var databasePrompt = ""
+    var databaseIsOptional = true
+    var userPrompt = "none"
+    var userIsOptional = true
+    /// None: the engine has no connection URL, and the URL bar is hidden.
+    var urlPrompt: String?
+    var readOnlyHint = "Browse and query, never change data. The server refuses every write."
+    /// AI access may cover every database on the server.
+    var offersEveryDatabase = false
+    /// Shown on the AI Access tab when a login reads more than its database.
+    var loginWarning: (title: String, detail: String)?
+
+    static func of(_ engine: Engine) -> EngineFields {
+        switch engine {
+        case .postgres:
+            EngineFields(databasePrompt: "postgres", databaseIsOptional: false, userPrompt: "postgres", userIsOptional: false,
+                         urlPrompt: "Paste a postgres:// URL to fill the form", offersEveryDatabase: true)
+        case .mysql:
+            EngineFields(databasePrompt: "optional: every database is shown", userPrompt: "root", userIsOptional: false,
+                         urlPrompt: "Paste a mysql:// URL to fill the form",
+                         loginWarning: ("AI tools can read every database this login can read",
+                                        "MySQL has no way to keep a login to one database. To limit what AI tools see, connect with a MySQL user that has rights only to the databases you want to share."))
+        case .mssql:
+            // SQL Server has no read-only session to ask for.
+            EngineFields(databasePrompt: "optional: the login's default database", userPrompt: "sa", userIsOptional: false,
+                         urlPrompt: "Paste a connection string (Server=…) or sqlserver:// URL to fill the form",
+                         readOnlyHint: "Browse and query, never change data. TablePort refuses writes and rolls back every query.",
+                         offersEveryDatabase: true)
+        case .redis:
+            EngineFields(databasePrompt: "0", userPrompt: "default", urlPrompt: "Paste a redis:// URL to fill the form",
+                         readOnlyHint: "Browse and read, never change data. TablePort runs only commands that read.")
+        case .mongo:
+            EngineFields(databasePrompt: "optional: every database is shown", urlPrompt: "Paste a mongodb:// URL to fill the form",
+                         offersEveryDatabase: true)
+        case .cassandra:
+            // CQL has no URL, no read-only session and no transactions.
+            EngineFields(databaseLabel: "Keyspace", databasePrompt: "optional: every keyspace is shown",
+                         readOnlyHint: "Browse and query, never change data. TablePort runs only statements that read.",
+                         loginWarning: ("AI tools can read every keyspace this login can read",
+                                        "A CQL query can name any keyspace. To limit what AI tools see, connect with a Cassandra role that has rights only to the keyspaces you want to share."))
+        case .sqlite, .libsql:
+            // Their own tabs, without server fields or a URL bar.
+            EngineFields(databaseIsOptional: false)
+        }
     }
 }
