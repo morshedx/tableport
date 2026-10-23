@@ -5284,6 +5284,11 @@ public enum Engine: Equatable, Hashable {
      * database is used without it.
      */
     case mssql
+    /**
+     * Apache Cassandra or ScyllaDB. `database` is an optional keyspace to
+     * start in: the sidebar shows every keyspace.
+     */
+    case cassandra
 
 
 
@@ -5319,6 +5324,8 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         
         case 7: return .mssql
         
+        case 8: return .cassandra
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -5353,6 +5360,10 @@ public struct FfiConverterTypeEngine: FfiConverterRustBuffer {
         
         case .mssql:
             writeInt(&buf, Int32(7))
+        
+        
+        case .cassandra:
+            writeInt(&buf, Int32(8))
         
         }
     }

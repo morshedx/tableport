@@ -36,6 +36,13 @@ redis = { version = "1.7", default-features = false, features = ["aio", "tokio-c
 # SQL Server and Azure SQL. Native TLS, as for the others; chrono to show dates.
 tiberius = { version = "0.13", default-features = false, features = ["tds80", "native-tls", "chrono"] }
 tokio-util = { version = "0.7", features = ["compat"] }
+# Cassandra and ScyllaDB. rustls with ring, as the MongoDB driver uses: no C toolchain.
+scylla = { version = "1.9", features = ["rustls-023", "chrono-04"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"  # verify-full for Cassandra: Mozilla's root certificates, as the MongoDB driver uses
+uuid = "1"  # checks UUIDs typed into Cassandra cells
+async-trait = "0.1"  # the driver's AddressTranslator, for SSH tunnels
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }  # Cassandra dates as text
 # MongoDB: the official driver.
 mongodb = "3.9"
 # MySQL and MariaDB. Native TLS, as for PostgreSQL; the Rust zlib, so no C toolchain.

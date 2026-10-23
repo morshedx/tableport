@@ -107,9 +107,9 @@ struct ConnectionForm: View {
     private var isServerComplete: Bool {
         if engine.isSqlite { return !trimmed(database).isEmpty }
         // MySQL shows every database of the server; naming one is optional.
-        let hasDatabase = engine == .mysql || engine == .redis || engine == .mongo || engine == .mssql || !trimmed(database).isEmpty
+        let hasDatabase = engine == .mysql || engine == .redis || engine == .mongo || engine == .mssql || engine == .cassandra || !trimmed(database).isEmpty
         // Redis logs in as its default user, and MongoDB may need no login.
-        let hasUser = engine == .redis || engine == .mongo || !trimmed(user).isEmpty
+        let hasUser = engine == .redis || engine == .mongo || engine == .cassandra || !trimmed(user).isEmpty
         return !trimmed(host).isEmpty && hasDatabase && hasUser && serverPort != nil
     }
 
@@ -138,7 +138,8 @@ struct ConnectionForm: View {
                 .padding(.bottom, 14)
             VStack(alignment: .leading, spacing: 14) {
                 // URLs are for servers; a file is chosen on the Connection tab.
-                if !engine.isSqlite { urlBar }
+                // Cassandra has no connection URL.
+                if !engine.isSqlite && engine != .cassandra { urlBar }
                 tabBar
                 Group {
                     switch tab {
@@ -221,7 +222,7 @@ struct ConnectionForm: View {
         switch engine {
         case .sqlite: sqliteTab
         case .libsql: libsqlTab
-        case .postgres, .mysql, .redis, .mongo, .mssql: serverTab
+        case .postgres, .mysql, .redis, .mongo, .mssql, .cassandra: serverTab
         }
     }
 
@@ -303,9 +304,12 @@ struct ConnectionForm: View {
                 }
                 SwitchRow("Read-only", hint: engine == .redis
                               ? "Browse and read, never change data. TablePort runs only commands that read."
-                              : engine == .mssql
                               // SQL Server has no read-only session to ask for.
+                              : engine == .mssql
                               ? "Browse and query, never change data. TablePort refuses writes and rolls back every query."
+                              // Nor does Cassandra, which has no transactions either.
+                              : engine == .cassandra
+                              ? "Browse and query, never change data. TablePort runs only statements that read."
                               : "Browse and query, never change data. The server refuses every write.",
                           isOn: $readOnly)
             }
@@ -330,7 +334,7 @@ struct ConnectionForm: View {
                     TextField("Database", text: $database, prompt: Text(databasePrompt))
                 }
                 FormRow("User") {
-                    TextField("User", text: $user, prompt: Text(engine == .redis ? "default" : engine == .mongo ? "none" : engine == .mysql ? "root" : engine == .mssql ? "sa" : "postgres"))
+                    TextField("User", text: $user, prompt: Text(engine == .redis ? "default" : engine == .mongo || engine == .cassandra ? "none" : engine == .mysql ? "root" : engine == .mssql ? "sa" : "postgres"))
                 }
                 FormRow("Password") {
                     HStack(spacing: 6) {
@@ -373,8 +377,8 @@ struct ConnectionForm: View {
                               isOn: $aiAllDatabases, indent: true)
                 }
             }
-            if engine == .mysql {
-                mysqlAccessWarning
+            if engine == .mysql || engine == .cassandra {
+                loginAccessWarning
             }
             if engine == .libsql {
                 Label("For AI access, a read-only token is safest: turso db tokens create <database> --read-only.",
@@ -386,18 +390,21 @@ struct ConnectionForm: View {
         }
     }
 
-    /// A MySQL login reads every database it has rights to; TablePort can't
-    /// keep an AI tool to one, so the user must know before turning it on.
-    private var mysqlAccessWarning: some View {
+    /// A MySQL or Cassandra login reads every database or keyspace it has
+    /// rights to; TablePort can't keep an AI tool to one, so the user must
+    /// know before turning it on.
+    private var loginAccessWarning: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(Theme.warning)
                 .font(.system(size: 15))
             VStack(alignment: .leading, spacing: 4) {
-                Text("AI tools can read every database this login can read")
+                Text(engine == .cassandra ? "AI tools can read every keyspace this login can read" : "AI tools can read every database this login can read")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Theme.ink)
-                Text("MySQL has no way to keep a login to one database. To limit what AI tools see, connect with a MySQL user that has rights only to the databases you want to share.")
+                Text(engine == .cassandra
+                     ? "A CQL query can name any keyspace. To limit what AI tools see, connect with a Cassandra role that has rights only to the keyspaces you want to share."
+                     : "MySQL has no way to keep a login to one database. To limit what AI tools see, connect with a MySQL user that has rights only to the databases you want to share.")
                     .font(Theme.meta)
                     .foregroundStyle(Theme.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -431,7 +438,7 @@ struct ConnectionForm: View {
             }
             if isNew {
                 Picker("Database", selection: $engine) {
-                    ForEach([Engine.postgres, .mysql, .mssql, .sqlite, .libsql, .redis, .mongo], id: \.self) { engine in
+                    ForEach([Engine.postgres, .mysql, .mssql, .sqlite, .libsql, .redis, .mongo, .cassandra], id: \.self) { engine in
                         Text(engine == .mysql ? "MySQL / MariaDB" : engine == .libsql ? "libSQL / Turso" : engine.label).tag(engine)
                     }
                 }
@@ -449,6 +456,7 @@ struct ConnectionForm: View {
         case .redis: "0"
         case .mongo: "optional: every database is shown"
         case .mssql: "optional: the login's default database"
+        case .cassandra: "optional: every keyspace is shown"
         default: "postgres"
         }
     }
@@ -461,6 +469,7 @@ struct ConnectionForm: View {
         case .redis: ("6379", "", "0")
         case .mongo: ("27017", "", "")
         case .mssql: ("1433", "sa", "")
+        case .cassandra: ("9042", "", "")
         case .sqlite, .libsql: ("", "", "")
         }
     }
@@ -504,6 +513,10 @@ struct ConnectionForm: View {
         if engine == .redis {
             let user = trimmed(self.user).isEmpty ? "" : "\(trimmed(self.user))@"
             return "Redis · \(user)\(host):\(port)/\(trimmed(database).isEmpty ? "0" : trimmed(database))"
+        }
+        if engine == .cassandra {
+            let user = trimmed(self.user).isEmpty ? "" : "\(trimmed(self.user))@"
+            return "Cassandra · \(user)\(host):\(port)\(trimmed(database).isEmpty ? "" : "/\(trimmed(database))")"
         }
         if engine == .mssql {
             let database = trimmed(self.database).isEmpty ? "" : "/\(trimmed(self.database))"
@@ -669,7 +682,7 @@ struct ConnectionForm: View {
                   // "SQL Server 2022 (16.0.4135.4)" → "2022"; "Azure SQL 12.0.2000.8" → "Azure SQL".
                   : engine == .mssql ? "Connected · \(version.hasPrefix("Azure") ? "Azure SQL" : version.split(separator: " ").dropFirst(2).first.map(String.init) ?? version)"
                   // "MySQL 8.4.13" → "8.4.13"; the server's name is in the header.
-                  : engine == .mysql || engine == .libsql || engine == .redis || engine == .mongo ? "Connected · \(version.split(separator: " ").last.map(String.init) ?? version)"
+                  : engine == .mysql || engine == .libsql || engine == .redis || engine == .mongo || engine == .cassandra ? "Connected · \(version.split(separator: " ").last.map(String.init) ?? version)"
                   : "Connected · \(version.split(separator: " ").first.map(String.init) ?? version)",
                   systemImage: "checkmark.circle.fill")
                 .help(engine == .postgres ? "PostgreSQL \(version)" : version)

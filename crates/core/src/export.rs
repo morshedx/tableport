@@ -50,6 +50,9 @@ impl DatabaseSession {
         if self.engine() == crate::Engine::Mongo {
             return self.mongo_export(relation, columns, filters, sort, scope, format, path).await;
         }
+        if self.engine() == crate::Engine::Cassandra {
+            return self.cassandra_export(relation, columns, filters, sort, primary_key, scope, format, path).await;
+        }
         let select = select_sql(&relation, &columns, &filters, sort.as_ref(), &primary_key, &scope, self.dialect())?;
         if format == ExportFormat::Sql && columns.is_empty() {
             return Err(DatabaseError::new("The table's columns are not loaded yet."));
@@ -156,6 +159,9 @@ impl DatabaseSession {
         }
         if self.engine() == crate::Engine::Mongo {
             return self.mongo_full_rows(relation, columns, keys).await;
+        }
+        if self.engine() == crate::Engine::Cassandra {
+            return self.cassandra_full_rows(relation, columns, primary_key, keys).await;
         }
         let dialect = self.dialect();
         let key_list = primary_key.iter().map(|name| dialect.key_text(&quote_identifier(name))).collect::<Vec<_>>().join(", ");

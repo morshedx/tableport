@@ -90,6 +90,8 @@ struct EngineLogo: View {
             logo(Self.redis, label: "Redis", letters: "Re", color: Color(red: 1.0, green: 0.27, blue: 0.22))
         case .mongo:
             logo(Self.mongo, label: "MongoDB", letters: "Mo", color: Color(red: 0.28, green: 0.64, blue: 0.28))
+        case .cassandra:
+            logo(Self.cassandra, label: "Cassandra", letters: "Ca", color: Color(red: 0.07, green: 0.53, blue: 0.69), tint: true)
         case .mssql:
             // Microsoft's trademark rules don't allow its logo here: letters, in SQL Server's red.
             logo(nil, label: "SQL Server", letters: "Ss", color: Color(red: 0.80, green: 0.16, blue: 0.15))
@@ -127,6 +129,7 @@ struct EngineLogo: View {
     private static let turso = image("turso")
     private static let redis = image("redis")
     private static let mongo = image("mongodb")
+    private static let cassandra = image("cassandra")
     /// Turso's own teal in dark mode; darker in light mode, where it would vanish.
     private static let tursoTeal = Color(nsColor: NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua

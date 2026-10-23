@@ -153,6 +153,10 @@ final class WorkspaceModel: ObservableObject {
             let host = settings.host.contains("://") ? SavedConnection.displayHost(of: settings.host) : "\(settings.host):\(settings.port)"
             return settings.database.isEmpty ? host : "\(host)/\(settings.database)"
         }
+        if settings.engine == .cassandra {
+            let user = settings.user.isEmpty ? "" : "\(settings.user)@"
+            return "\(user)\(settings.host):\(settings.port)\(settings.database.isEmpty ? "" : "/\(settings.database)")"
+        }
         if settings.engine == .redis {
             let user = settings.user.isEmpty ? "" : "\(settings.user)@"
             return "\(user)\(settings.host):\(settings.port) · db\(settings.database.isEmpty ? "0" : settings.database)"
@@ -685,7 +689,7 @@ private struct HeaderBar: View {
                     Text((model.connection.database as NSString).lastPathComponent)
                 }
                 .help(model.connection.database)
-            } else if model.connection.engine == .mysql || model.connection.engine == .redis || model.connection.engine == .mongo {
+            } else if [.mysql, .redis, .mongo, .cassandra].contains(model.connection.engine) {
                 // The sidebar lists every database of the server; the chip names the server.
                 HeaderChip {
                     headerLucide("database")

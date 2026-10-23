@@ -370,6 +370,7 @@ fn engine_name(engine: crate::Engine) -> &'static str {
         crate::Engine::Redis => "Redis",
         crate::Engine::Mongo => "MongoDB",
         crate::Engine::Mssql => "SQL Server",
+        crate::Engine::Cassandra => "Cassandra",
     }
 }
 
@@ -428,7 +429,7 @@ fn tool_definitions() -> Value {
     json!([
         {
             "name": "list_connections",
-            "description": "The connections the user allowed for AI access in TablePort, with each one's engine: PostgreSQL, MySQL, SQL Server, SQLite, libSQL, Redis or MongoDB.",
+            "description": "The connections the user allowed for AI access in TablePort, with each one's engine: PostgreSQL, MySQL, SQL Server, SQLite, libSQL, Redis, MongoDB or Cassandra.",
             "inputSchema": { "type": "object", "properties": {} },
             "annotations": { "readOnlyHint": true },
         },
@@ -466,6 +467,7 @@ fn tool_definitions() -> Value {
                 On Redis: one read command (GET, HGETALL, LRANGE, SCAN, ZRANGE…) as sql; writes, scripts and KEYS are refused. \
                 On MongoDB: one call in mongo shell syntax as sql, such as db.people.find({ age: { $gt: 30 } }).limit(10) or \
                 db.orders.aggregate([…]); writes, $out and $merge are refused. \
+                On Cassandra: one CQL SELECT. \
                 On SQL Server: one T-SQL SELECT or WITH … SELECT (use TOP, not LIMIT); variables, EXEC, INTO and OPENQUERY are refused.",
             "inputSchema": {
                 "type": "object",
@@ -522,6 +524,20 @@ async fn read_query(session: &DatabaseSession, sql: &str, max_rows: u64) -> Resu
         rows.truncate(max_rows as usize);
         let summary = format!("{}{} documents", rows.len(), if truncated { "+" } else { "" });
         let body = json!({ "documents": rows, "count": rows.len(), "truncated": truncated });
+        return Ok((serde_json::to_string_pretty(&body).unwrap_or_default(), summary));
+    }
+    if let Some(link) = session.cassandra() {
+        let sql = statement(sql).to_string();
+        let mut rows = crate::on_runtime(async move { link.read_only_json(&sql, max_rows, MYSQL_TIMEOUT).await }).await?;
+        let truncated = rows.len() as u64 > max_rows;
+        rows.truncate(max_rows as usize);
+        let summary = format!("{}{} rows", rows.len(), if truncated { "+" } else { "" });
+        let body = json!({
+            "rows": rows,
+            "row_count": rows.len(),
+            "truncated": truncated,
+            "note": if truncated { "More rows exist; raise max_rows or add a LIMIT or WHERE." } else { "" },
+        });
         return Ok((serde_json::to_string_pretty(&body).unwrap_or_default(), summary));
     }
     if let Some(link) = session.mssql() {
@@ -585,6 +601,9 @@ async fn read_query(session: &DatabaseSession, sql: &str, max_rows: u64) -> Resu
 async fn explain_query(session: &DatabaseSession, sql: &str) -> Result<(String, String), DatabaseError> {
     if session.engine() == crate::Engine::Mongo {
         return Err(DatabaseError::new("explain_query isn't available on MongoDB yet; run_read_query shows the documents."));
+    }
+    if session.engine() == crate::Engine::Cassandra {
+        return Err(DatabaseError::new("Cassandra has no query plans: a query reads the partitions its WHERE names, or scans with ALLOW FILTERING."));
     }
     if let Some(link) = session.mssql() {
         let sql = statement(sql).to_string();

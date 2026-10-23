@@ -51,6 +51,9 @@ impl DatabaseSession {
         if let Some(link) = self.mssql() {
             return on_runtime(async move { link.run_query(sql, max_rows).await }).await;
         }
+        if let Some(link) = self.cassandra() {
+            return on_runtime(async move { link.run_query(sql, max_rows).await }).await;
+        }
         if self.engine() == crate::Engine::Mongo {
             return self.mongo_run(sql, max_rows).await;
         }
@@ -137,6 +140,10 @@ impl DatabaseSession {
             return on_runtime(async move { link.cancel().await }).await;
         }
         if let Some(link) = self.mssql() {
+            link.cancel();
+            return Ok(());
+        }
+        if let Some(link) = self.cassandra() {
             link.cancel();
             return Ok(());
         }

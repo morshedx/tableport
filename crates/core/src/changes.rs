@@ -30,6 +30,9 @@ impl SqlFunction {
             (Self::Now, Engine::Mssql) => "SYSDATETIME()",
             (Self::CurrentDate, Engine::Mssql) => "CAST(SYSDATETIME() AS date)",
             (Self::CurrentTime, Engine::Mssql) => "CAST(SYSDATETIME() AS time)",
+            (Self::Now, Engine::Cassandra) => "toTimestamp(now())",
+            (Self::CurrentDate, Engine::Cassandra) => "currentDate()",
+            (Self::CurrentTime, Engine::Cassandra) => "currentTime()",
             (Self::Now, Engine::Postgres | Engine::Mysql | Engine::Redis | Engine::Mongo) => "now()",
             (Self::Now, Engine::Sqlite | Engine::Libsql) => "CURRENT_TIMESTAMP",
             (Self::CurrentDate, _) => "CURRENT_DATE",
@@ -107,6 +110,9 @@ pub fn changes_sql(
     if engine == Engine::Mongo {
         return crate::mongo::change_commands(changes, relation, columns);
     }
+    if engine == Engine::Cassandra {
+        return crate::cassandra::change_statements(changes, relation, columns, primary_key);
+    }
     let mut statements = Vec::new();
     for update in &changes.updates {
         let set: Vec<&Column> = columns.iter().filter(|column| update.values.contains_key(&column.name)).collect();
@@ -164,6 +170,9 @@ impl DatabaseSession {
         let engine = self.engine();
         if engine == Engine::Mongo {
             return self.mongo_commit(relation, changes, columns).await;
+        }
+        if engine == Engine::Cassandra {
+            return self.cassandra_commit(changes, relation, columns, primary_key).await;
         }
         let statements = changes_sql(&changes, &relation, &columns, &primary_key, engine)?;
         if statements.is_empty() {

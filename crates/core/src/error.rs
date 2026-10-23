@@ -120,6 +120,23 @@ impl DatabaseError {
     }
 }
 
+impl DatabaseError {
+    /// The driver's text, without the layers it wraps the server's message
+    /// in: "Database returned an error: …, Error message: X" → "X".
+    pub(crate) fn from_cassandra_text(text: &str, endpoint: &str) -> Self {
+        if let Some((_, message)) = text.rsplit_once("Error message: ") {
+            return Self::new(message.trim().to_string());
+        }
+        if text.contains("Connection refused") {
+            return Self::new(format!("Could not reach {endpoint}: Connection refused."));
+        }
+        if text.contains("Authentication") || text.contains("authentication") {
+            return Self::new(format!("{endpoint} refused the login: {text}"));
+        }
+        Self::new(text.to_string())
+    }
+}
+
 fn io_reason(error: &io::Error) -> String {
     match error.kind() {
         io::ErrorKind::ConnectionRefused => "Connection refused".into(),

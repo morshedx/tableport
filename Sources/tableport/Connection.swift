@@ -117,6 +117,7 @@ extension Engine: Codable {
         case .redis: "redis"
         case .mongo: "mongo"
         case .mssql: "mssql"
+        case .cassandra: "cassandra"
         }
     }
 
@@ -129,6 +130,7 @@ extension Engine: Codable {
         case "redis": .redis
         case "mongo": .mongo
         case "mssql": .mssql
+        case "cassandra": .cassandra
         default: .postgres
         }
     }
@@ -147,6 +149,7 @@ extension Engine: Codable {
         case .redis: "Redis"
         case .mongo: "MongoDB"
         case .mssql: "SQL Server"
+        case .cassandra: "Cassandra"
         }
     }
 

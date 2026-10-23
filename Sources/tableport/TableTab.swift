@@ -602,6 +602,8 @@ struct TableTabView: View {
                 onRemoveNewRow: model.removeNewRow,
                 onEditCell: model.setCell,
                 onToggleDelete: model.toggleDelete,
+                // Cassandra can't sort a whole table.
+                isSortable: model.session.engine() != .cassandra,
                 onSelectRow: { model.inspectedRow = $0 },
                 onSpace: { model.showsInspector.toggle() },
                 identity: model.relation.id,

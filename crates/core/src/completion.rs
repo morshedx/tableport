@@ -79,6 +79,7 @@ impl DatabaseSession {
             crate::Engine::Sqlite | crate::Engine::Libsql => return self.sqlite_completer().await,
             crate::Engine::Mysql => return self.mysql_completer().await,
             crate::Engine::Mssql => return self.mssql_completer().await,
+            crate::Engine::Cassandra => return self.cassandra_completer().await,
             crate::Engine::Redis | crate::Engine::Mongo => return Err(DatabaseError::new("This connection has no SQL to complete.")),
             crate::Engine::Postgres => {}
         }
@@ -377,6 +378,41 @@ impl DatabaseSession {
             search_path.push("dbo".into());
         }
         Ok(Arc::new(Completer { relations, functions, schemas, search_path, backticks: false }))
+    }
+}
+
+impl DatabaseSession {
+    /// Every keyspace's tables and views with their columns. The keyspace
+    /// the session started in is searched for unqualified names.
+    async fn cassandra_completer(&self) -> Result<Arc<Completer>, DatabaseError> {
+        let schemas = self.schemas().await?;
+        let rows = self.text_rows("SELECT keyspace_name, table_name, column_name FROM system_schema.columns".into()).await?;
+        let mut columns: std::collections::HashMap<(String, String), Vec<String>> = std::collections::HashMap::new();
+        for row in rows {
+            let [Some(schema), Some(table), Some(column)] = <[Option<String>; 3]>::try_from(row).unwrap_or_default() else { continue };
+            columns.entry((schema, table)).or_default().push(column);
+        }
+        let mut relations: Vec<CatalogRelation> = schemas
+            .iter()
+            .flat_map(|schema| schema.relations.iter())
+            .map(|relation| CatalogRelation {
+                schema: relation.schema.clone(),
+                name: relation.name.clone(),
+                kind: relation.kind,
+                columns: columns.remove(&(relation.schema.clone(), relation.name.clone())).unwrap_or_default(),
+            })
+            .collect();
+        relations.sort_by(|a, b| a.name.cmp(&b.name));
+        let functions = crate::cassandra::FUNCTIONS.iter().map(|name| (String::new(), name.to_string())).collect();
+        let mut search_path = vec![String::new()];
+        search_path.extend(Some(self.settings().database.trim().to_string()).filter(|keyspace| !keyspace.is_empty()));
+        Ok(Arc::new(Completer {
+            relations,
+            functions,
+            schemas: schemas.into_iter().map(|schema| schema.name).collect(),
+            search_path,
+            backticks: false,
+        }))
     }
 }
 

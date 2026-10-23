@@ -5,6 +5,7 @@
 //! [`DatabaseError`]. Nothing may panic across the boundary: a panic in a
 //! spawned task comes back as an error instead.
 
+mod cassandra;
 mod changes;
 mod completion;
 mod error;

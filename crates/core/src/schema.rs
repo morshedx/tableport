@@ -67,6 +67,9 @@ impl DatabaseSession {
         if self.engine() == crate::Engine::Mongo {
             return Ok(self.mongo_schemas().await?.into_iter().map(|schema| schema.name).collect());
         }
+        if self.engine() == crate::Engine::Cassandra {
+            return Ok(self.cassandra_schemas().await?.into_iter().map(|schema| schema.name).collect());
+        }
         // A SQLite connection is one file.
         match self.dialect() {
             Dialect::Sqlite => return Ok(vec![self.settings().database]),
@@ -87,6 +90,9 @@ impl DatabaseSession {
     pub async fn schemas(&self) -> Result<Vec<SchemaContents>, DatabaseError> {
         if self.engine() == crate::Engine::Mongo {
             return self.mongo_schemas().await;
+        }
+        if self.engine() == crate::Engine::Cassandra {
+            return self.cassandra_schemas().await;
         }
         match self.dialect() {
             Dialect::Sqlite => return self.sqlite_schemas().await,
@@ -136,6 +142,10 @@ impl DatabaseSession {
         if self.engine() == crate::Engine::Mongo {
             return Ok(if relation.kind == RelationKind::View { Vec::new() } else { vec!["_id".into()] });
         }
+        // A materialized view is written through its table only.
+        if self.engine() == crate::Engine::Cassandra {
+            return if relation.kind == RelationKind::View { Ok(Vec::new()) } else { self.cassandra_primary_key(&relation).await };
+        }
         match self.dialect() {
             Dialect::Sqlite => return self.sqlite_primary_key(&relation).await,
             Dialect::Mysql => return self.mysql_primary_key(&relation).await,
@@ -158,6 +168,9 @@ impl DatabaseSession {
     pub async fn foreign_keys(&self, relation: Relation) -> Result<Vec<ForeignKey>, DatabaseError> {
         if self.engine() == crate::Engine::Mongo {
             return Ok(Vec::new());
+        }
+        if self.engine() == crate::Engine::Cassandra {
+            return Ok(self.cassandra_foreign_keys());
         }
         match self.dialect() {
             Dialect::Sqlite => return self.sqlite_foreign_keys(&relation).await,
@@ -270,6 +283,8 @@ pub fn drop_relation_sql(relation: Relation, cascade: bool, engine: crate::Engin
     let cascade = cascade && engine == crate::Engine::Postgres;
     let kind = match relation.kind {
         RelationKind::Table | RelationKind::PartitionedTable => "TABLE",
+        // Cassandra's views are materialized views.
+        RelationKind::View if engine == crate::Engine::Cassandra => "MATERIALIZED VIEW",
         RelationKind::View => "VIEW",
         RelationKind::MaterializedView => "MATERIALIZED VIEW",
         RelationKind::ForeignTable => "FOREIGN TABLE",
@@ -286,6 +301,7 @@ pub fn truncate_sql(relation: Relation, restart_identity: bool, cascade: bool, e
         crate::Engine::Sqlite | crate::Engine::Libsql => return format!("DELETE FROM {};", relation.quoted_name()),
         // TRUNCATE restarts AUTO_INCREMENT and IDENTITY on its own, and has no CASCADE.
         crate::Engine::Mysql | crate::Engine::Mssql => return format!("TRUNCATE TABLE {};", relation.quoted_name()),
+        crate::Engine::Cassandra => return format!("TRUNCATE {};", relation.quoted_name()),
         crate::Engine::Postgres | crate::Engine::Redis => {}
     }
     format!(

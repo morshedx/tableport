@@ -484,6 +484,9 @@ private func commonColumnTypes(_ engine: Engine) -> [String] {
     case .mssql:
         ["int", "bigint", "smallint", "bit", "decimal(12,2)", "float", "nvarchar(255)", "nvarchar(max)", "varchar(255)",
          "date", "datetime2", "datetimeoffset", "time", "uniqueidentifier", "varbinary(max)"]
+    case .cassandra:
+        ["text", "int", "bigint", "uuid", "timeuuid", "timestamp", "date", "boolean", "decimal", "double", "blob",
+         "list<text>", "set<text>", "map<text, text>"]
     case .sqlite, .libsql:
         ["INTEGER", "REAL", "TEXT", "BLOB", "NUMERIC"]
     case .redis, .mongo:
@@ -551,6 +554,11 @@ struct NewTableSheet: View {
             _rows = State(initialValue: [
                 Row(name: "id", columnType: "bigint", primaryKey: true, nullable: false, defaultValue: "IDENTITY(1,1)"),
                 Row(name: "", columnType: "nvarchar(255)", primaryKey: false, nullable: true),
+            ])
+        case .cassandra:
+            _rows = State(initialValue: [
+                Row(name: "id", columnType: "uuid", primaryKey: true, nullable: false),
+                Row(name: "", columnType: "text", primaryKey: false, nullable: true),
             ])
         case .postgres, .redis, .mongo:
             break

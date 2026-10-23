@@ -109,6 +109,9 @@ impl DatabaseSession {
         if self.engine() == crate::Engine::Mongo {
             return self.mongo_columns(relation).await;
         }
+        if self.engine() == crate::Engine::Cassandra {
+            return self.cassandra_columns(&relation).await;
+        }
         match self.dialect() {
             Dialect::Sqlite => return self.sqlite_columns(&relation).await,
             Dialect::Mysql => return self.mysql_columns(&relation).await,
@@ -166,6 +169,9 @@ impl DatabaseSession {
         if self.engine() == crate::Engine::Mongo {
             return self.mongo_rows(relation, columns, filters, sort, offset, limit).await;
         }
+        if self.engine() == crate::Engine::Cassandra {
+            return self.cassandra_rows(relation, columns, filters, sort, offset, limit).await;
+        }
         let dialect = self.dialect();
         let select_list = if columns.is_empty() {
             "NULL".to_string()
@@ -196,6 +202,10 @@ impl DatabaseSession {
     pub async fn estimated_row_count(&self, relation: Relation) -> Result<Option<u64>, DatabaseError> {
         if self.engine() == crate::Engine::Mongo {
             return self.mongo_estimated_count(relation).await;
+        }
+        // Cassandra keeps no row count; counting reads the whole table.
+        if self.engine() == crate::Engine::Cassandra {
+            return Ok(None);
         }
         // SQLite keeps no row estimate; a file database counts quickly.
         match self.dialect() {
@@ -231,6 +241,9 @@ impl DatabaseSession {
     ) -> Result<u64, DatabaseError> {
         if self.engine() == crate::Engine::Mongo {
             return self.mongo_count(relation, columns, filters).await;
+        }
+        if self.engine() == crate::Engine::Cassandra {
+            return self.cassandra_count(relation, columns, filters).await;
         }
         // COUNT_BIG: SQL Server's count(*) is an int, too small for a big table.
         let count = if self.dialect() == Dialect::Mssql { "COUNT_BIG(*)" } else { "count(*)" };

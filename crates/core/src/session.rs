@@ -43,6 +43,9 @@ pub enum Engine {
     /// SQL Server or Azure SQL. `database` is optional: the login's default
     /// database is used without it.
     Mssql,
+    /// Apache Cassandra or ScyllaDB. `database` is an optional keyspace to
+    /// start in: the sidebar shows every keyspace.
+    Cassandra,
 }
 
 impl Engine {
@@ -74,7 +77,7 @@ impl ConnectionSettings {
     /// Where the connection goes, for messages: "host:port", or the file name.
     pub(crate) fn endpoint(&self) -> String {
         match self.engine {
-            Engine::Postgres | Engine::Mysql | Engine::Redis | Engine::Mssql => format!("{}:{}", self.host, self.port),
+            Engine::Postgres | Engine::Mysql | Engine::Redis | Engine::Mssql | Engine::Cassandra => format!("{}:{}", self.host, self.port),
             // A connection string's hosts: mongodb+srv://user@cluster0.example.net/db → cluster0.example.net.
             Engine::Mongo if self.host.contains("://") => {
                 let rest = self.host.split_once("://").map_or(self.host.as_str(), |(_, rest)| rest);
@@ -112,6 +115,7 @@ enum Link {
     Redis(crate::redis::RedisLink),
     Mongo(crate::mongo::MongoLink),
     Mssql(crate::mssql::MssqlLink),
+    Cassandra(crate::cassandra::CassandraLink),
 }
 
 struct PgLink {
@@ -149,6 +153,7 @@ impl DatabaseSession {
             Link::Redis(link) => link.version.clone(),
             Link::Mongo(link) => link.version.clone(),
             Link::Mssql(link) => link.version.clone(),
+            Link::Cassandra(link) => link.version.clone(),
         }
     }
 
@@ -185,6 +190,9 @@ impl DatabaseSession {
         if let Some(link) = self.mssql() {
             return on_runtime(async move { link.ping().await }).await;
         }
+        if let Some(link) = self.cassandra() {
+            return on_runtime(async move { link.ping().await }).await;
+        }
         let client = self.client()?;
         let endpoint = self.settings.endpoint();
         on_runtime(async move {
@@ -211,6 +219,7 @@ impl DatabaseSession {
             Link::Redis(link) => link.is_closed(),
             Link::Mongo(link) => link.is_closed(),
             Link::Mssql(link) => link.is_closed(),
+            Link::Cassandra(link) => link.is_closed(),
         }
     }
 
@@ -223,6 +232,7 @@ impl DatabaseSession {
             Link::Redis(link) => link.close(),
             Link::Mongo(link) => link.close(),
             Link::Mssql(link) => link.close(),
+            Link::Cassandra(link) => link.close(),
         }
     }
 
@@ -239,6 +249,9 @@ impl DatabaseSession {
             return self.mongo_run(sql, 0).await.map(|_| ());
         }
         if let Some(link) = self.mssql() {
+            return on_runtime(async move { link.execute(sql).await }).await;
+        }
+        if let Some(link) = self.cassandra() {
             return on_runtime(async move { link.execute(sql).await }).await;
         }
         let client = self.client()?;
@@ -271,7 +284,7 @@ impl DatabaseSession {
     pub(crate) fn client(&self) -> Result<Arc<Client>, DatabaseError> {
         match &*self.read_link() {
             Link::Postgres(link) => Ok(link.client.clone()),
-            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) => {
+            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) => {
                 Err(DatabaseError::new("This needs a PostgreSQL connection."))
             }
         }
@@ -282,7 +295,7 @@ impl DatabaseSession {
         match &*self.read_link() {
             Link::Sqlite(link) => Some(crate::libsql::SqliteLike::File(link.clone())),
             Link::Libsql(link) => Some(crate::libsql::SqliteLike::Remote(link.clone())),
-            Link::Postgres(_) | Link::Mysql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) => None,
+            Link::Postgres(_) | Link::Mysql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) => None,
         }
     }
 
@@ -302,6 +315,14 @@ impl DatabaseSession {
         }
     }
 
+    /// The Cassandra link, when the connection is to Cassandra or ScyllaDB.
+    pub(crate) fn cassandra(&self) -> Option<crate::cassandra::CassandraLink> {
+        match &*self.read_link() {
+            Link::Cassandra(link) => Some(link.clone()),
+            _ => None,
+        }
+    }
+
     /// The SQL Server link, when the connection is to SQL Server or Azure SQL.
     pub(crate) fn mssql(&self) -> Option<crate::mssql::MssqlLink> {
         match &*self.read_link() {
@@ -314,7 +335,7 @@ impl DatabaseSession {
     pub(crate) fn mysql(&self) -> Option<crate::mysql::MysqlLink> {
         match &*self.read_link() {
             Link::Mysql(link) => Some(link.clone()),
-            Link::Postgres(_) | Link::Sqlite(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) => None,
+            Link::Postgres(_) | Link::Sqlite(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) => None,
         }
     }
 
@@ -324,15 +345,15 @@ impl DatabaseSession {
             Engine::Sqlite | Engine::Libsql => crate::rows::Dialect::Sqlite,
             Engine::Mysql => crate::rows::Dialect::Mysql,
             Engine::Mssql => crate::rows::Dialect::Mssql,
-            // Redis and MongoDB have no SQL; nothing asks for their dialect.
-            Engine::Redis | Engine::Mongo => crate::rows::Dialect::Postgres,
+            // Redis, MongoDB and Cassandra have their own paths; nothing asks for their dialect.
+            Engine::Redis | Engine::Mongo | Engine::Cassandra => crate::rows::Dialect::Postgres,
         }
     }
 
     pub(crate) fn tls(&self) -> Option<postgres_native_tls::MakeTlsConnector> {
         match &*self.read_link() {
             Link::Postgres(link) => link.tls.clone(),
-            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) => None,
+            Link::Sqlite(_) | Link::Mysql(_) | Link::Libsql(_) | Link::Redis(_) | Link::Mongo(_) | Link::Mssql(_) | Link::Cassandra(_) => None,
         }
     }
 
@@ -360,6 +381,7 @@ async fn open_link(settings: &ConnectionSettings) -> Result<Link, DatabaseError>
         Engine::Redis => crate::redis::RedisLink::open(settings).await.map(Link::Redis),
         Engine::Mongo => crate::mongo::MongoLink::open(settings).await.map(Link::Mongo),
         Engine::Mssql => crate::mssql::MssqlLink::open(settings).await.map(Link::Mssql),
+        Engine::Cassandra => crate::cassandra::CassandraLink::open(settings).await.map(Link::Cassandra),
     }
 }
 
@@ -445,6 +467,9 @@ impl DatabaseSession {
             return on_runtime(async move { link.text_rows(sql).await }).await;
         }
         if let Some(link) = self.mssql() {
+            return on_runtime(async move { link.text_rows(sql).await }).await;
+        }
+        if let Some(link) = self.cassandra() {
             return on_runtime(async move { link.text_rows(sql).await }).await;
         }
         let client = self.client()?;
