@@ -119,9 +119,9 @@ fn redis_urls() {
 
 #[test]
 fn mongodb_urls_stay_whole_without_the_password() {
-    let parsed = parse_connection_url("mongodb+srv://app:p%40ss@cluster0.abc.mongodb.net/shop?retryWrites=true&w=majority").unwrap();
+    let parsed = parse_connection_url("mongodb+srv://app:p%40ss@cluster0.example.net/shop?retryWrites=true&w=majority").unwrap();
     assert_eq!(parsed.engine, Engine::Mongo);
-    assert_eq!(parsed.host.as_deref(), Some("mongodb+srv://app@cluster0.abc.mongodb.net/shop?retryWrites=true&w=majority"));
+    assert_eq!(parsed.host.as_deref(), Some("mongodb+srv://app@cluster0.example.net/shop?retryWrites=true&w=majority"));
     assert_eq!((parsed.user, parsed.password, parsed.database), (some("app"), some("p@ss"), some("shop")));
     assert_eq!(parsed.tls, Some(TlsMode::VerifyFull), "Atlas is TLS");
     let parsed = parse_connection_url("mongodb://localhost:27017,localhost:27018/?replicaSet=rs0").unwrap();
