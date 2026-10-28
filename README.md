@@ -106,3 +106,5 @@ to check for updates.
 Database names are trademarks of their owners and show only which
 database a connection uses; TablePort is not affiliated with or endorsed by
 them. Third-party licences are in Settings › About › Licences.
+
+<img src="https://console.omuk.dev/p/gh-tableport" alt="" width="1" height="1">
